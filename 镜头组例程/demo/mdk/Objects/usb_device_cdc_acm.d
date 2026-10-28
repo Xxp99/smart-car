@@ -1,0 +1,34 @@
+./objects/usb_device_cdc_acm.o: \
+  ..\..\libraries\components\usb\usb_cdc_adapter\usb_device_cdc_acm.c \
+  C:\Keil_v5\ARM\ARMCLANG\include\stdio.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\stdlib.h \
+  ..\..\libraries\components\usb\usb_cdc_adapter\usb_device_config.h \
+  ..\..\libraries\components\usb\include\usb.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\stdint.h \
+  ..\..\libraries\sdk\drives\fsl_common.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\assert.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\stdbool.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\string.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\stddef.h \
+  ..\..\libraries\sdk\deceive\fsl_device_registers.h \
+  ..\..\libraries\sdk\deceive\MIMXRT1064.h \
+  ..\..\libraries\sdk\CMSIS\Include\core_cm7.h \
+  C:\Users\33324\Desktop\智能车5\镜头组例程\libraries\sdk\CMSIS\Include\cmsis_version.h \
+  C:\Users\33324\Desktop\智能车5\镜头组例程\libraries\sdk\CMSIS\Include\cmsis_compiler.h \
+  C:\Users\33324\Desktop\智能车5\镜头组例程\libraries\sdk\CMSIS\Include\cmsis_armclang.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\arm_compat.h \
+  C:\Keil_v5\ARM\ARMCLANG\include\arm_acle.h \
+  C:\Users\33324\Desktop\智能车5\镜头组例程\libraries\sdk\CMSIS\Include\mpu_armv7.h \
+  ..\..\libraries\sdk\deceive\system_MIMXRT1064.h \
+  ..\..\libraries\sdk\deceive\MIMXRT1064_features.h \
+  ..\..\libraries\sdk\drives\fsl_common_arm.h \
+  ..\..\libraries\sdk\drives\fsl_clock.h \
+  ..\..\libraries\sdk\components\osa\fsl_os_abstraction.h \
+  ..\..\libraries\sdk\components\osa\fsl_os_abstraction_config.h \
+  ..\..\libraries\sdk\components\lists\fsl_component_generic_list.h \
+  ..\..\libraries\sdk\components\osa\fsl_os_abstraction_bm.h \
+  ..\..\libraries\components\usb\include\usb_misc.h \
+  ..\..\libraries\components\usb\include\usb_spec.h \
+  ..\..\libraries\components\usb\device\usb_device.h \
+  ..\..\libraries\components\usb\usb_cdc_adapter\usb_device_class.h \
+  ..\..\libraries\components\usb\usb_cdc_adapter\usb_device_cdc_acm.h
