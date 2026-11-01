@@ -42,25 +42,105 @@ static unsigned zebra_transitions(const uint8_t *p, unsigned count, unsigned ste
     return longest ? longest - 1 : 0;
 }
 
-static uint8_t zebra_detect(const uint8_t *image, unsigned h, unsigned w)
+// Four complete black bars, with regular white gaps and aligned probes across 20 pixels.
+// Initial pixel limits for 188x120; camera images are still needed for calibration.
+#define ZEBRA_BAR_COUNT 4
+#define ZEBRA_PROBE_COUNT 21
+static int zebra_bars(const uint8_t *p, unsigned n, unsigned step,
+                      int start, int *lo, int *hi)
 {
-    unsigned consecutive = 0;
-    for (unsigned y = h / 3; y < h * 9 / 10; ++y)
-    {
-        if (zebra_transitions(image + y * w + w / 6, w * 2 / 3, 1) >= 6)
-        {
-            if (++consecutive >= 3) return 1;
-        }
-        else consecutive = 0;
-    }
-    /* Also accept transverse bars only when all three interior columns agree. */
-    for (unsigned i = 0; i < 3; ++i)
-    {
-        unsigned x = (int)(w / 2) + ((int)i - 1) * (int)(w / 12);
-        if (zebra_transitions(image + (h / 3) * w + x, h / 2, w) < 6) return 0;
+    int pos=start;
+    // Skip a bar clipped by the scan start; later complete bars may still qualify.
+    if(pos>0 && pos<(int)n && p[(pos-1)*step]==0)
+        while(pos<(int)n && p[pos*step]==0) ++pos;
+    for(int k=0;k<ZEBRA_BAR_COUNT;++k) {
+        while(pos<(int)n && p[pos*step]!=0) ++pos;
+        if(pos==0 || pos>=(int)n || p[(pos-1)*step]==0) return 0; // White leading margin.
+        lo[k]=pos;
+        while(pos<(int)n && p[pos*step]==0) ++pos;
+        if(pos>=(int)n) return 0; // No clipped black bars.
+        hi[k]=pos;
     }
     return 1;
 }
+static int zebra_regular(const int *lo,const int *hi,int span)
+{
+    int minw=1000,maxw=0,ming=1000,maxg=0;
+    for(int k=0;k<ZEBRA_BAR_COUNT;++k) {
+        int width=hi[k]-lo[k];
+        if(width<2 || width*2>span) return 0; // Bars must be elongated.
+        if(width<minw) minw=width;
+        if(width>maxw) maxw=width;
+        if(k) {
+            int gap=lo[k]-hi[k-1];
+            if(gap<2) return 0;
+            if(gap<ming) ming=gap;
+            if(gap>maxg) maxg=gap;
+        }
+    }
+    return maxw<=minw*2 && maxg<=ming*2 && maxg<=minw*3 && maxw<=ming*3;
+}
+static int zebra_patch(const uint8_t *base,unsigned length,unsigned step,unsigned probe_step)
+{
+    int lo[4],hi[4],prev_lo[4],prev_hi[4];
+    // Search complete groups; a single bad early run need not hide a later zebra.
+    for(int begin=1;begin<(int)length-14;) {
+        if(!zebra_bars(base,length,step,begin,lo,hi)) return 0;
+        begin=hi[0]+1;
+        if(!zebra_regular(lo,hi,20)) continue;
+        for(int k=0;k<4;++k) {prev_lo[k]=lo[k];prev_hi[k]=hi[k];}
+        int ok=1;
+        for(int line=1;line<ZEBRA_PROBE_COUNT && ok;++line) {
+            const uint8_t *p=base+line*probe_step;
+            int from=prev_lo[0]>2?prev_lo[0]-2:1;
+            if(!zebra_bars(p,length,step,from,lo,hi) || !zebra_regular(lo,hi,20)) {ok=0;break;}
+            int shift=lo[0]-prev_lo[0];
+            if(shift < -2 || shift > 2) {ok=0;break;}
+            for(int k=0;k<4;++k) {
+                int d=lo[k]-prev_lo[k]-shift, e=hi[k]-prev_hi[k]-shift;
+                if(d < -1 || d > 1 || e < -1 || e > 1 ||
+                   lo[k]>=prev_hi[k] || hi[k]<=prev_lo[k]) ok=0;
+                prev_lo[k]=lo[k];prev_hi[k]=hi[k];
+            }
+        }
+        if(ok) return 1;
+    }
+    return 0;
+}
+static uint8_t zebra_detect_lane(const uint8_t *image,unsigned h,unsigned w,
+                                  const uint8_t *left,const uint8_t *right)
+{
+    if(!image || h<60 || w<80) return 0;
+    unsigned x0=w/3,x1=w*2/3; // Conservative center fallback, not the whole image.
+    if(left && right) {
+        unsigned l=0,r=0,count=0,minwidth=w,maxwidth=0;
+        for(unsigned y=h-5;y<h;++y) {
+            if(left[y]<=2 || right[y]>=w-3 || right[y]<=left[y]+w/4) continue;
+            unsigned width=right[y]-left[y];
+            if(width<minwidth) minwidth=width;
+            if(width>maxwidth) maxwidth=width;
+            l+=left[y];r+=right[y];++count;
+        }
+        if(count>=3 && maxwidth-minwidth<=w/16) {
+            l/=count;r/=count;
+            x0=l+(r-l)/8;x1=r-(r-l)/8;
+            // Without a perspective model, also keep the conservative center ROI.
+            if(x0<w/3) x0=w/3;
+            if(x1>w*2/3) x1=w*2/3;
+        }
+    }
+    if(x1<=x0+20) return 0;
+    // Consecutive rows spanning 20 pixels: repeated vertical bars in the camera image.
+    for(unsigned y=h/3;y+20<h*9/10;y+=2)
+        if(zebra_patch(image+y*w+x0,x1-x0,1,w)) return 1;
+    // Consecutive columns spanning 20 pixels: transverse bars. Position matching is
+    // mandatory; independent transition counts in different columns are not enough.
+    for(unsigned x=x0;x+20<x1;x+=4)
+        if(zebra_patch(image+(h/3)*w+x,h*9/10-h/3,w,1)) return 1;
+    return 0;
+}
+static uint8_t zebra_detect(const uint8_t *image,unsigned h,unsigned w)
+{ return zebra_detect_lane(image,h,w,0,0); }
 
 typedef enum
 {

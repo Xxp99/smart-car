@@ -5,6 +5,7 @@
 #include "pid.h"
 #include "main.h"
 #include "zebra_pass.h"
+#include "brick_avoid.h"
 #define MT9V03X_H 120
 #define MT9V03X_W 188
 #define PWM_DUTY_MAX 10000
@@ -75,11 +76,82 @@ static void gap_frames(int side, int count)
 {
     for (int i=0; i<count; ++i) { road(side); frame(); }
 }
+static void entry_curve_frames(int side,int count)
+{
+    for(int i=0;i<count;++i) {
+        memset(image,0,sizeof image);
+        for(int y=0;y<120;++y) {
+            int shift=(y-96)/2;
+            if(shift < -12) shift=-12;
+            if(side==2) shift=-shift;
+            for(int x=51+shift;x<138+shift;++x) image[y][x]=255;
+        }
+        frame();
+    }
+}
 
 #ifndef REPLAY_MODE
 int main(void)
 {
     My_Pid_Init();
+#if !ZEBRA_ENABLE
+    clear_frames(100);
+    for(int i=0;i<200;++i) {stripes(); frame(); assert(zebra.phase==ZEBRA_NORMAL);}
+    clear_frames(100);
+    assert(zebra_race.phase==ZEBRA_RACE_START);
+    assert(fabsf(speed_target-SPEED_STRAIGHT_TARGET)<0.01f);
+    assert(strstr(screen92,"Z:OFF"));
+    for(int side=1;side<=2;++side) {
+        memset(&track_nav,0,sizeof track_nav);
+        memset(&track_detector,0,sizeof track_detector);
+        clear_frames(10);
+        gap_frames(side,ROUND_CONFIRM_FRAMES+NAV_FEATURE_FRAMES);
+        assert(track_nav.phase==NAV_ENTER && track_nav.entry_guide==1);
+        assert(side==1?control_mid[96]<94:control_mid[96]>94);
+        assert(duty[SERVO_MOTOR_PWM]!=750);
+        clear_frames(16); assert(track_nav.phase==NAV_ENTER);
+        entry_curve_frames(side,16); assert(track_nav.phase==NAV_INSIDE);
+        // Real image -> temporal detector -> lower-corner-only entry -> PWM.
+        memset(&track_nav,0,sizeof track_nav);
+        memset(&track_detector,0,sizeof track_detector);
+        clear_frames(10);
+        for(int f=0;f<9;++f) {
+            road(0);
+            for(int y=0;y<=(f?100:98);++y)
+                for(int x=side==1?1:51;x<(side==1?138:187);++x) image[y][x]=255;
+            frame();
+        }
+        assert(track_nav.phase==NAV_ENTER && track_nav.entry_guide==1);
+        assert(side==1?control_mid[96]<94:control_mid[96]>94);
+        assert(duty[SERVO_MOTOR_PWM]!=750);
+    }
+    for(int side=1;side<=2;++side) {
+        memset(&brick,0,sizeof brick);
+        memset(&track_nav,0,sizeof track_nav);
+        memset(&track_detector,0,sizeof track_detector);
+        encoder_data_1=encoder_data_2=28;
+        clear_frames(10);
+        for(int f=0;f<12;++f) {
+            road(0);
+            for(int y=50;y<=75;++y)
+                for(int x=side==1?51:108;x<(side==1?81:138);++x) image[y][x]=0;
+            frame();
+        }
+        assert(brick.phase==BRICK_AVOID && brick.side==side);
+        assert(track_nav.phase==NAV_NORMAL && track_nav.width[72]==88);
+        assert(side==1?control_mid[96]>94:control_mid[96]<94);
+        assert(speed_target>0 && speed_target<=BRICK_SPEED && duty[SERVO_MOTOR_PWM]!=750);
+        encoder_data_1=encoder_data_2=0;
+        clear_frames(30);
+        assert(brick.phase==BRICK_HOLD && brick.travel==0);
+        assert(side==1?control_mid[96]>94:control_mid[96]<94);
+        encoder_data_1=encoder_data_2=45;
+        for(int f=0;f<65 && brick.phase!=BRICK_IDLE;++f) clear_frames(1);
+        assert(brick.phase==BRICK_IDLE && control_mid[96]==94);
+    }
+    puts("PASS: zebra disabled, LCD OFF, mirrored entry steering and straight-pass rejection");
+    return 0;
+#endif
     clear_frames(10);
     assert(zebra_race.phase==ZEBRA_RACE_START);
     // The start stripe can remain/reappear for longer than the start guard.
@@ -119,8 +191,12 @@ int main(void)
     {
         gap_frames(side, ROUND_CONFIRM_FRAMES+NAV_FEATURE_FRAMES);
         assert(track_nav.phase==NAV_ENTER);
-        assert(side==1 ? control_mid[96]<94 : control_mid[96]>94);
+        assert(track_nav.entry_guide==1);
+        assert(side==1?control_mid[96]<94:control_mid[96]>94);
+        assert(duty[SERVO_MOTOR_PWM]!=750); // Main must actually send a turn command.
         clear_frames(16);
+        assert(track_nav.phase==NAV_ENTER); // Passing the opening straight is not entry.
+        entry_curve_frames(side,16);
         assert(track_nav.phase==NAV_INSIDE && fabsf(speed_target-SPEED_CURVE_TARGET)<0.01f);
         gap_frames(side==1 ? 2 : 1, 6);
         assert(track_nav.phase==NAV_EXIT);
@@ -136,9 +212,11 @@ int main(void)
         }
         assert(track_nav.phase==NAV_ENTER && track_nav.path_valid[96]);
         assert(left_line[96]==0 && right_line[96]==187);
-        assert(control_mid[96]==(side==1 ? 119 : 68));
+        assert(control_mid[96]==(side==1 ? 120 : 67));
         assert(fabsf(speed_target-SPEED_CURVE_TARGET)<0.01f);
         clear_frames(16);
+        assert(track_nav.phase==NAV_ENTER);
+        entry_curve_frames(side,16);
         assert(track_nav.phase==NAV_INSIDE);
         gap_frames(side==1 ? 2 : 1,6);
         assert(track_nav.phase==NAV_EXIT);

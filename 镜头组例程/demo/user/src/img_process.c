@@ -5,6 +5,7 @@
 
 #include "img_process.h"
 #include "string.h"
+#include <stdlib.h>
 
 /*
  *@func: 二值化函数
@@ -326,16 +327,8 @@ static track_element_t round_classify(const uint8_t *left, const uint8_t *right,
         const uint8_t *outer = kind == 1 ? right : left;
         if (!round_outer_continuous(outer, top_anchor, bottom_anchor, rows, cols, kind == 1))
             continue;
-        int gap_width = 0, observed = 0;
-        for (int k = first; k < y; ++k)
-            if (round_outer_visible(outer[k], cols))
-            {
-                gap_width += right[k] - left[k];
-                ++observed;
-            }
-        // 双侧丢线行不参与宽度证据，不能利用画面边界或补线虚增开口宽度。
-        if (!observed || gap_width * anchors * 100 < width_sum * observed * ROUND_WIDTH_PERCENT)
-            continue;
+        // One continuous reference edge and two supported opening endpoints.
+        // Do not compare sentinel-based opening width with ordinary road width.
         track_element_t found = kind == 1 ? TRACK_ROUND_LEFT : TRACK_ROUND_RIGHT;
         if (result != TRACK_NONE && result != found) return TRACK_UNKNOWN;
         result = found;
@@ -346,77 +339,143 @@ static track_element_t round_classify(const uint8_t *left, const uint8_t *right,
 track_element_t track_element_classify(const uint8_t *left, const uint8_t *right,
                                       uint8_t rows, uint8_t cols)
 {
-    int start = rows / 4;
-    int end = rows * 9 / 10;
-    int min_gap = rows / ELEMENT_GAP_MIN_DIV;
+    int start = rows / 8, end = rows - 5;
     int saw_loss = 0;
     track_element_t result = TRACK_NONE;
-    if (!left || !right || rows < 40 || cols < 40)
-    {
-        return TRACK_UNKNOWN;
-    }
+    if (!left || !right || rows < 40 || cols < 40) return TRACK_UNKNOWN;
     for (int y = start; y < end; )
     {
-        uint8_t kind = track_row_kind(left[y], right[y], cols);
-        if (kind == 0)
-        {
-            ++y;
-            continue;
-        }
+        int kind = round_row_kind(left[y], right[y], cols);
+        if (kind == 0) { ++y; continue; }
         saw_loss = 1;
-        int first = y;
-        while (y < end && track_row_kind(left[y], right[y], cols) == kind)
+        if (kind == 4) { ++y; continue; }
+        int first = y, overlap = 0;
+        // Union of left/right openings permits a slanted cross with staggered corners.
+        while (y < end)
         {
+            kind = round_row_kind(left[y], right[y], cols);
+            if (kind == 0 || kind == 4) break;
+            if (kind == 3) ++overlap;
             ++y;
         }
         int length = y - first;
-        // 单侧开口由下面独立的环岛判据处理，十字保持原来的严格条件。
-        if (kind != 3) continue;
-        // 开口必须在上下都有连续双边线，不把整片白图或出画弯道认成路口。
-        if (kind == 4 || length < min_gap || length > rows / ELEMENT_GAP_MAX_DIV ||
-            first < start + 3 || y + 2 >= end)
+        if (y <= rows/4 || first >= rows*9/10 || first < start+5 || y >= end ||
+            overlap < rows/30 || overlap*2 < length || length*100 > rows*45) continue;
+        int top_count = 0, bottom_count = 0, width_sum = 0;
+        for (int k = 0; k < 5; ++k)
         {
-            continue;
+            int top = first-1-k, bottom = y+k;
+            if (round_row_kind(left[top],right[top],cols)==0)
+            { ++top_count; width_sum += right[top]-left[top]; }
+            if (round_row_kind(left[bottom],right[bottom],cols)==0)
+            { ++bottom_count; width_sum += right[bottom]-left[bottom]; }
         }
-        int anchors_ok = 1;
-        int width_sum = 0;
-        for (int k = 0; k < 3; ++k)
-        {
-            int top = first - 1 - k;
-            int bottom = y + k;
-            if (track_row_kind(left[top], right[top], cols) != 0 ||
-                track_row_kind(left[bottom], right[bottom], cols) != 0)
-            {
-                anchors_ok = 0;
-            }
-            width_sum += (int)right[top] - left[top] + (int)right[bottom] - left[bottom];
-        }
-        if (!anchors_ok || width_sum < 6 * (cols / 10))
-        {
-            continue;
-        }
-        int gap_width = 0;
-        for (int k = first; k < y; ++k)
-        {
-            gap_width += (int)right[k] - left[k];
-        }
-        // 十字开口宽度至少参考宽度的1.5倍。
-        if (gap_width * 600 < width_sum * length * 150)
-        {
-            continue;
-        }
-        track_element_t found = TRACK_CROSS;
-        if (result != TRACK_NONE && result != found)
-        {
-            return TRACK_UNKNOWN; // 同一帧存在冲突特征
-        }
-        result = found;
+        int anchors = top_count+bottom_count;
+        if (top_count<2 || bottom_count<2 || width_sum < anchors*(cols/10)) continue;
+        // Missing-edge sentinels are not measured road width: do not use
+        // their separation as a cross/normal-road expansion ratio.
+        result = TRACK_CROSS;
     }
     track_element_t round_result = round_classify(left, right, rows, cols, &saw_loss);
     if (round_result == TRACK_UNKNOWN ||
         (round_result != TRACK_NONE && result != TRACK_NONE)) return TRACK_UNKNOWN;
     if (round_result != TRACK_NONE) return round_result;
     return result != TRACK_NONE ? result : (saw_loss ? TRACK_UNKNOWN : TRACK_NONE);
+}
+
+// A clipped opening has only one visible corner. Require a smooth opposite
+// boundary, not just continuity; the other corner is never synthesized.
+static int round_partial(const uint8_t *left,const uint8_t *right,int rows,int cols,
+                          int is_left,int *corner,int *kind)
+{
+    const uint8_t *inner=is_left?left:right,*outer=is_left?right:left;
+    int a=0,b=rows;
+    if(round_outer_lost(inner[0],cols,!is_left)) {
+        while(a<rows && round_outer_lost(inner[a],cols,!is_left)) ++a;
+        b=a; a=0; *kind=1; *corner=b;
+    } else if(round_outer_lost(inner[rows-1],cols,!is_left)) {
+        a=rows-1;
+        while(a>0 && round_outer_lost(inner[a-1],cols,!is_left)) --a;
+        *kind=2; *corner=a-1;
+    } else return 0;
+    if(b-a<rows/ROUND_GAP_MIN_DIV || *corner<rows/4 || *corner>=rows-3) return 0;
+    for(int k=0;k<3;++k) {
+        int y=*corner+(*kind==1?k:-k);
+        if(round_row_kind(left[y],right[y],cols)!=0 || right[y]-left[y]<cols/10 ||
+           (is_left?inner[y]:cols-1-inner[y])<cols/ROUND_CORNER_MIN_DIV) return 0;
+        if(k && abs((int)inner[y]-inner[*corner])>cols/20) return 0;
+    }
+    int first=rows/8,last=rows-1;
+    if(!round_outer_continuous(outer,first,last,rows,cols,is_left)) return 0;
+    while(first<last && !round_outer_visible(outer[first],cols)) ++first;
+    while(last>first && !round_outer_visible(outer[last],cols)) --last;
+    if(last-first<rows/2) return 0;
+    for(int y=first;y<=last;++y) {
+        if(left[y]>=right[y]) return 0;
+        if(!round_outer_visible(outer[y],cols)) continue;
+        int fit=outer[first]+((int)outer[last]-outer[first])*(y-first)/(last-first);
+        if(abs((int)outer[y]-fit)>cols/32) return 0;
+    }
+    return 1;
+}
+
+void track_element_observe(track_detector_t *state,const uint8_t *left,const uint8_t *right,
+                           uint8_t rows,uint8_t cols,uint32_t now_ms)
+{
+    track_element_t candidate=track_element_classify(left,right,rows,cols);
+    int side=0,corner=0,kind=0,c=0,k=0;
+    if(candidate==TRACK_UNKNOWN && left && right && rows>=40 && cols>=40) {
+        if(round_partial(left,right,rows,cols,1,&corner,&kind)) side=1;
+        if(round_partial(left,right,rows,cols,0,&c,&k)) {
+            if(side) side=0;
+            else {side=2;corner=c;kind=k;}
+        }
+    }
+    if(side) {
+        if(state->sequence_side!=side ||
+           now_ms-state->sequence_last_ms>=ROUND_SEQUENCE_GAP_MS ||
+           now_ms-state->sequence_start_ms>=ROUND_SEQUENCE_MAX_MS) {
+            state->sequence_side=(uint8_t)side;
+            state->sequence_kind=(uint8_t)kind;
+            state->sequence_row=(uint8_t)corner;
+            state->sequence_progress=0;
+            state->sequence_start_ms=now_ms;
+            state->confirm_count=0;
+        } else if((state->sequence_kind==kind && corner>=state->sequence_row+2 &&
+                   corner<=state->sequence_row+rows/3) ||
+                  (state->sequence_kind!=kind && abs(corner-state->sequence_row)<=rows/2))
+            state->sequence_progress=1;
+        state->sequence_last_ms=now_ms;
+        if(state->sequence_progress) candidate=side==1?TRACK_ROUND_LEFT:TRACK_ROUND_RIGHT;
+    } else {
+        state->sequence_side=state->sequence_progress=0;
+    }
+    track_element_update(state,candidate);
+}
+
+// Robust local bands replace the two exact-row requirement for telemetry only.
+uint8_t track_road_shape(const uint8_t *left, const uint8_t *right,
+                         uint8_t rows, uint8_t cols)
+{
+    int centers[2];
+    if (!left || !right || rows < 40 || cols < 40) return 0;
+    for (int band=0; band<2; ++band)
+    {
+        int row = band ? rows*3/5 : rows*4/5;
+        int count=0, sum=0, previous=-1;
+        for (int y=row-4; y<=row+4; ++y)
+        {
+            int width = (int)right[y]-left[y];
+            if (left[y]==0 || right[y]>=cols-1 || width<cols/10) continue;
+            int center = (left[y]+right[y])/2;
+            if (previous>=0 && (center-previous>8 || previous-center>8)) return 0;
+            previous=center; sum+=center; ++count;
+        }
+        if (count<3) return 0;
+        centers[band]=sum/count;
+    }
+    int offset=centers[0]-cols/2, change=centers[1]-centers[0];
+    return offset>=-5 && offset<=5 && change>=-5 && change<=5 ? 1 : 2;
 }
 
 void track_element_update(track_detector_t *state, track_element_t candidate)
@@ -483,6 +542,7 @@ static int nav_pair(uint8_t left, uint8_t right, uint8_t cols)
 static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
 {
     nav->phase = phase;
+    if (phase==NAV_INSIDE || phase==NAV_EXIT || phase==NAV_NORMAL) nav->entry_pending=0;
     nav->stage_ms = now;
     nav->feature_frames = 0;
     nav->straight_frames = 0;
@@ -555,15 +615,157 @@ static int nav_exit_road(const track_nav_t *nav, const uint8_t *left,
         if (!round_outer_visible(before, cols) || !round_outer_visible(after, cols)) continue;
         int d0 = is_left ? cols-1-before : before;
         int d1 = is_left ? cols-1-after : after;
-        if (d0 < cols/ROUND_CORNER_MIN_DIV || d1 < cols/ROUND_CORNER_MIN_DIV) continue;
+        if (d0 < cols/ROUND_EXIT_CORNER_MIN_DIV || d1 < cols/ROUND_EXIT_CORNER_MIN_DIV) continue;
         if (nav_far_road(nav,left,right,rows,cols,first-1,row,center,slope) &&
             *row == first-1) return 1;
     }
     return 0;
 }
 
+// Detect an interior black cap on the island side. Reject edge-connected black
+// background and isolated pixels; require white above and four supported rows.
+static void nav_ring_apex(track_nav_t *nav, const uint8_t *binary,
+                           int rows, int cols, int is_left, uint32_t now_ms)
+{
+    if ((uint32_t)(now_ms-nav->apex_ms)>=300u) nav->apex_hits=0;
+    nav->apex_ms=now_ms;
+    int found=0, ax=0, ay=0;
+    nav->apex_valid=0;
+    if (!binary || (nav->phase!=NAV_APPROACH && nav->phase!=NAV_ENTER))
+    { nav->apex_hits=0; return; }
+    for (int y=rows/8; y<rows*3/5 && !found; ++y)
+    for (int x=3; x<cols-3; )
+    {
+        if (binary[y*cols+x]!=0) { ++x; continue; }
+        int first=x;
+        while (x<cols-3 && binary[y*cols+x]==0) ++x;
+        int last=x-1, center=(first+last)/2, width=x-first, ok=1;
+        if (first<=3 || x>=cols-3 || width<3 || width>cols/3 ||
+            (is_left ? center>=cols/2 : center<=cols/2)) continue;
+        for (int k=first-1;k<=last+1;++k)
+            if (binary[(y-1)*cols+k]==0 || binary[(y-2)*cols+k]==0) ok=0;
+        int previous_width=width;
+        for (int dy=1;dy<=3 && ok;++dy)
+        {
+            int l=center,r=center;
+            if (binary[(y+dy)*cols+center]!=0) {ok=0;break;}
+            while(l>1 && binary[(y+dy)*cols+l-1]==0) --l;
+            while(r<cols-2 && binary[(y+dy)*cols+r+1]==0) ++r;
+            int w=r-l+1;
+            if(l<=1 || r>=cols-2 || w<previous_width ||
+               w-previous_width>cols/8 || w>cols/2) ok=0;
+            previous_width=w;
+        }
+        if(ok && previous_width>=width+2) {found=1;ax=center;ay=y;break;}
+    }
+    if (!found) {nav->apex_hits=0;return;}
+    int dx=ax-nav->apex_prev_x,dy=ay-nav->apex_prev_y;
+    if(nav->apex_hits && dx>=-8 && dx<=8 && dy>=-8 && dy<=8)
+    {if(nav->apex_hits<3) ++nav->apex_hits;}
+    else nav->apex_hits=1;
+    nav->apex_prev_x=(uint8_t)ax; nav->apex_prev_y=(uint8_t)ay;
+    if(nav->apex_hits>=3)
+    {nav->apex_x=(uint8_t)ax;nav->apex_y=(uint8_t)ay;nav->apex_valid=1;}
+}
+
+// Follow the current cap's connected black component. The road-facing edge is
+// a boundary, never a centerline target. Stop on loss/branch/jump; no extrapolation.
+static void nav_ring_contour(const track_nav_t *nav, const uint8_t *binary,
+                             int rows, int cols, int is_left, uint8_t *edge)
+{
+    memset(edge, 0, rows);
+    if (!nav->apex_valid || !binary) return;
+    int previous_left=nav->apex_x, previous_right=nav->apex_x;
+    for (int y=nav->apex_y; y<rows; ++y)
+    {
+        int x=previous_left, l, r;
+        while (x<=previous_right && binary[y*cols+x]!=0) ++x;
+        if (x>previous_right) break;
+        l=r=x;
+        while (l>1 && binary[y*cols+l-1]==0) --l;
+        while (r<cols-2 && binary[y*cols+r+1]==0) ++r;
+        // More than one overlapping run is ambiguous (noise or a branch).
+        for (x=r+1; x<=previous_right; ++x)
+            if (binary[y*cols+x]==0) break;
+        if (x<=previous_right || l<=1 || r>=cols-2 || r-l+1>cols*3/4 ||
+            (y>nav->apex_y &&
+             (l-previous_left>cols/20 || previous_left-l>cols/20 ||
+              r-previous_right>cols/20 || previous_right-r>cols/20))) break;
+        edge[y]=(uint8_t)(is_left?r:l);
+        previous_left=l; previous_right=r;
+    }
+}
+
+// A near opening may guide ENTER without a visible cap. Require current real
+// endpoints and the same bounded outer-edge support used by recognition.
+static int nav_entry_gap(const uint8_t *left, const uint8_t *right,
+                         int row, int rows, int cols, int is_left, int *first, int *end)
+{
+    const uint8_t *inner=is_left?left:right, *outer=is_left?right:left;
+    int a=row,b=row;
+    // round_outer_lost's direction is reversed for the inner edge.
+    if (!round_outer_lost(inner[row],cols,!is_left)) return 0;
+    while(a>0 && round_outer_lost(inner[a-1],cols,!is_left)) --a;
+    while(b<rows && round_outer_lost(inner[b],cols,!is_left)) ++b;
+    if(a==0) {
+        int corner,kind;
+        if(!round_partial(left,right,rows,cols,is_left,&corner,&kind) || kind!=1) return 0;
+        // Current lower corner only; bounded virtual lead, never an old corner.
+        *first=b>rows/3?b-rows/3:0; *end=b;
+        return row>=*first;
+    }
+    if(a<3 || b+2>=rows || b-a<rows/ROUND_GAP_MIN_DIV ||
+       (b-a)*100>rows*ROUND_GAP_MAX_PERCENT) return 0;
+    for(int k=0;k<3;++k)
+        if(!nav_pair(left[a-1-k],right[a-1-k],cols) ||
+           !nav_pair(left[b+k],right[b+k],cols)) return 0;
+    if((is_left?inner[a-1]:cols-1-inner[a-1])<cols/ROUND_CORNER_MIN_DIV ||
+       (is_left?inner[b]:cols-1-inner[b])<cols/ROUND_CORNER_MIN_DIV ||
+       !round_outer_continuous(outer,a-1,b,rows,cols,is_left)) return 0;
+    *first=a; *end=b;
+    return 1;
+}
+
+// Restored straight boundaries alone do not prove the car turned into a ring.
+// Require a same-direction near/far bend supported by five real pairs per band.
+static int nav_entry_turn(const uint8_t *left, const uint8_t *right,
+                          int near, int far, int cols, int is_left)
+{
+    int delta=0;
+    for(int k=-2;k<=2;++k)
+    {
+        if(!nav_pair(left[near+k],right[near+k],cols) ||
+           !nav_pair(left[far+k],right[far+k],cols)) return 0;
+        delta+=(int)left[near+k]+right[near+k]-left[far+k]-right[far+k];
+    }
+    return (is_left?delta:-delta)>=10*(cols/32);
+}
+
+// Seed missing row widths only from current real, consecutive boundary pairs.
+// Interpolate enclosed gaps; do not extrapolate from one side or use 0/W-1.
+static void nav_seed_ring_width(track_nav_t *nav, const uint8_t *left,
+                                const uint8_t *right, int rows, int cols)
+{
+    for(int y=rows/4;y<rows;++y)
+    {
+        if(nav->learned[y]) continue;
+        int top=y,bottom=y;
+        while(top>=1 && !(nav_pair(left[top],right[top],cols) &&
+                         nav_pair(left[top-1],right[top-1],cols))) --top;
+        while(bottom<rows-1 && !(nav_pair(left[bottom],right[bottom],cols) &&
+                               nav_pair(left[bottom+1],right[bottom+1],cols))) ++bottom;
+        if(top<1 || bottom>=rows-1 || bottom-top>rows/2+4) continue;
+        int wt=right[top]-left[top],wb=right[bottom]-left[bottom];
+        if(wt>cols*9/10 || wb>cols*9/10 || wt-wb>cols/3 || wb-wt>cols/3) continue;
+        int width=top==bottom?wt:wt+(wb-wt)*(y-top)/(bottom-top);
+        if(width<cols/10) continue;
+        nav->width[y]=(uint8_t)width;
+        nav->learned[y]=1;
+    }
+}
+
 void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
-                      const uint8_t *raw_left, const uint8_t *raw_right,
+                      const uint8_t *raw_left, const uint8_t *raw_right, const uint8_t *binary,
                       uint8_t *left, uint8_t *right, uint8_t *mid,
                       uint8_t rows, uint8_t cols, uint32_t now_ms)
 {
@@ -597,10 +799,26 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             both_open += left[y] == 0 && right[y] == cols - 1;
         }
     }
+    int ring_confirmed = detector->confirmed==TRACK_ROUND_LEFT ||
+                         detector->confirmed==TRACK_ROUND_RIGHT;
+    if (ring_confirmed && detector->candidate==detector->confirmed &&
+        (nav->phase==NAV_NORMAL || nav->phase==NAV_SLOW))
+        nav_seed_ring_width(nav,raw_left,raw_right,rows,cols);
+    // A stopped entry may resume only with fresh same-direction evidence and
+    // visible reference edge at both control rows, within the original timeout.
+    if (nav->phase==NAV_SLOW && nav->entry_pending && ring_confirmed &&
+        nav->element==detector->confirmed && detector->candidate==detector->confirmed &&
+        now_ms-nav->started_ms<NAV_TIMEOUT_MS && nav->learned[near] && nav->learned[far])
+    {
+        const uint8_t *outer=nav->element==TRACK_ROUND_LEFT?raw_right:raw_left;
+        if(round_outer_visible(outer[near],cols) && round_outer_visible(outer[far],cols))
+            nav_stage(nav,NAV_APPROACH,now_ms);
+    }
     if (nav->phase == NAV_NORMAL && detector->confirmed != TRACK_NONE &&
         detector->confirmed != TRACK_UNKNOWN)
     {
         nav->element = detector->confirmed;
+        nav->entry_pending = ring_confirmed;
         nav->started_ms = now_ms;
         nav_stage(nav, !nav->learned[near] || !nav->learned[far] ? NAV_SLOW :
             (nav->element == TRACK_CROSS ? NAV_CROSS : NAV_APPROACH), now_ms);
@@ -623,7 +841,8 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     nav->guide_valid = 0;
     int feature = 0;
     if (nav->phase == NAV_APPROACH) feature = inner_open >= rows / 20;
-    if (nav->phase == NAV_ENTER) feature = full && inner_open == 0;
+    if (nav->phase == NAV_ENTER) feature = full && inner_open == 0 &&
+        nav_entry_turn(raw_left,raw_right,near,far,cols,is_left);
     if (nav->phase == NAV_INSIDE) feature = outer_open >= rows / 20 && both_open == 0 && exit_evidence;
     if (feature) { if (nav->feature_frames < NAV_FEATURE_FRAMES) ++nav->feature_frames; }
     else nav->feature_frames = 0;
@@ -668,6 +887,13 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav_bridge(left, rows, cols, 1);
         nav_bridge(right, rows, cols, 0);
     }
+    nav_ring_apex(nav, binary, rows, cols, is_left, now_ms);
+    uint8_t island_edge[256];
+    nav_ring_contour(nav, binary, rows, cols, is_left, island_edge);
+    int entry_first=0,entry_end=0;
+    int entry_open=nav->phase==NAV_ENTER &&
+        nav_entry_gap(raw_left,raw_right,near,rows,cols,is_left,&entry_first,&entry_end);
+    nav->entry_guide=0;
     for (int y = rows / 4; y < rows; ++y)
     {
         int usable = nav_pair(left[y], right[y], cols);
@@ -687,7 +913,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                 outer_valid = round_outer_estimate(is_left ? raw_right : raw_left,
                                                    y, rows, cols, is_left, &outer_position);
             usable = 0;
-            // 入口沿外侧边线，入环偏向开口；环内沿岛边，出口另建连接线。
+            // 入口默认沿外侧边线；确认岛边后修补内边线，环内沿岛边。
             if (nav->phase == NAV_INSIDE && inner_valid)
             {
                 center = is_left ? raw_left[y] + width / 2 : raw_right[y] - width / 2;
@@ -698,8 +924,38 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                 center = is_left ? outer_position - width / 2 : outer_position + width / 2;
                 usable = 1;
             }
-            if (usable && nav->phase == NAV_ENTER)
-                center += (is_left ? -1 : 1) * width * NAV_ENTRY_BIAS_PERCENT / 100;
+            if (entry_open && usable && !island_edge[y] &&
+                y>=entry_first && y<entry_end)
+            {
+                // Repair the opening-side boundary toward the opening, using
+                // its real lower corner. Bound the resulting center shift.
+                int anchor=is_left?raw_left[entry_end]:raw_right[entry_end];
+                int border=is_left?ROUND_EDGE_MARGIN:cols-1-ROUND_EDGE_MARGIN;
+                int boundary=anchor+(border-anchor)*(entry_end-y)/(entry_end-entry_first);
+                int target=is_left?boundary+width/2:boundary-width/2;
+                int shift=is_left?center-target:target-center;
+                shift=nav_clip(shift,0,width/NAV_ENTRY_SHIFT_DIV);
+                target=center+(is_left?-shift:shift);
+                if (shift>0 && target-width/2>0 && target+width/2<cols-1 &&
+                    (!binary || binary[y*cols+target]!=0))
+                { center=target; if(y==near) nav->entry_guide=1; }
+            }
+            if (island_edge[y] &&
+                (nav->phase==NAV_APPROACH || nav->phase==NAV_ENTER))
+            {
+                int boundary=island_edge[y];
+                int corridor=outer_valid ? (is_left?outer_position-boundary:
+                                                    boundary-outer_position) : width;
+                int candidate=is_left?boundary+corridor/2:boundary-corridor/2;
+                if (corridor>=cols/10 && candidate-corridor/2>0 &&
+                    candidate+corridor/2<cols-1)
+                { center=candidate; width=corridor; usable=1;
+                  if(y==near) nav->entry_guide=2; }
+            }
+            // A current black pixel cannot be accepted as a drivable center,
+            // including while waiting for temporal cap confirmation.
+            if (usable && binary && (nav->phase==NAV_APPROACH || nav->phase==NAV_ENTER) &&
+                (center<=0 || center>=cols-1 || binary[y*cols+center]==0)) usable=0;
             if (usable)
             {
                 left[y] = (uint8_t)nav_clip(center - width / 2, 1, cols - 2);
@@ -745,6 +1001,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             center = ((int)left[y] + right[y]) / 2;
         }
         // 真实/补线可用性与短时保持分开，保持不能刷新last_path_ms。
+        if(y==near && !usable) nav->entry_guide=0;
         nav->path_valid[y] = usable;
         if (usable)
         {

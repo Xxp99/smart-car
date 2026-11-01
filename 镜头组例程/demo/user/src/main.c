@@ -2,6 +2,7 @@
 #include "fsl_clock.h"
 #include <stdio.h>
 #include "zebra_pass.h"
+#include "brick_avoid.h"
 #if WIRELESS_SPEED_ENABLE
 #include "wireless_speed.h"
 #endif
@@ -267,6 +268,7 @@ static zebra_pass_t zebra = {0};
 static zebra_race_t zebra_race = {0};
 static track_detector_t track_detector = {0};
 static track_nav_t track_nav = {0};
+static brick_t brick = {0};
 static uint32 last_navigation_frame_ms;
 static uint8 navigation_frame_initialized;
 static uint8_t stripe_row[MT9V03X_H];
@@ -308,7 +310,8 @@ int main(void)
             memcpy(control_left, left_line, sizeof(control_left));
             memcpy(control_right, right_line, sizeof(control_right));
             memcpy(control_mid, mid_line, sizeof(control_mid));
-            uint8_t zebra_candidate = zebra_detect(&image[0][0], MT9V03X_H, MT9V03X_W);
+#if ZEBRA_ENABLE
+            uint8_t zebra_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
             for (unsigned y = 0; y < MT9V03X_H; ++y)
             {
                 unsigned black = 0;
@@ -318,6 +321,9 @@ int main(void)
                     MT9V03X_W * 2 / 3, 1) >= 6 || black > MT9V03X_W / 4;
             }
 
+#else
+            uint8_t zebra_candidate = 0;
+#endif
             // 转向仍看4/5行；额外用3/5行的中线趋势提前安排减速。
             uint8_t near_row = MT9V03X_H * 4 / 5;
             uint8_t far_row = MT9V03X_H * 3 / 5;
@@ -329,6 +335,7 @@ int main(void)
             }
             navigation_frame_initialized = 1;
             last_navigation_frame_ms = now;
+#if ZEBRA_ENABLE
             uint8_t path_recovered =
                 zebra_row_valid(left_line, right_line, stripe_row, near_row, MT9V03X_W) &&
                 zebra_row_valid(left_line, right_line, stripe_row, far_row, MT9V03X_W);
@@ -341,11 +348,18 @@ int main(void)
             uint8_t finishing = zebra_race.phase == ZEBRA_RACE_PASS ||
                                 zebra_race.phase == ZEBRA_RACE_CLEAR;
             uint8_t passing = zebra_slow(&zebra, zebra_candidate) || finishing;
+#else
+            uint8_t path_recovered = 0, stopped = 0, finishing = 0, passing = 0;
+#endif
+            track_nav.apex_valid = 0; // No current apex until this frame runs navigation.
+            track_nav.entry_guide = 0;
             if (zebra.phase != ZEBRA_NORMAL || finishing || stopped)
             {
+                memset(&brick,0,sizeof brick);
                 // 斑马线确认后才接管；候选仅减速，不销毁现有导航阶段。
                 // 保留此前学到的赛道宽度，但清除元素确认和旧路径保持。
                 memset(&track_detector, 0, sizeof(track_detector));
+                track_nav.apex_hits = 0;
                 track_nav.phase = NAV_NORMAL;
                 track_nav.element = TRACK_NONE;
                 track_nav.feature_frames = track_nav.straight_frames = 0;
@@ -354,8 +368,11 @@ int main(void)
             }
             else if (zebra_candidate)
             {
+                memset(&brick,0,sizeof brick);
+                track_nav.apex_hits = 0;
                 // 候选图像不能推进元素确认或阶段；暂用此前可信路径。
                 track_detector.confirm_count = 0;
+                track_detector.sequence_side = track_detector.sequence_progress = 0;
                 track_nav.feature_frames = track_nav.straight_frames = 0;
                 if (track_nav.phase != NAV_NORMAL)
                 {
@@ -365,10 +382,27 @@ int main(void)
             }
             else
             {
-                track_element_update(&track_detector,
-                    track_element_classify(left_line, right_line, MT9V03X_H, MT9V03X_W));
-                track_nav_update(&track_nav, &track_detector, left_line, right_line,
-                    control_left, control_right, control_mid, MT9V03X_H, MT9V03X_W, now);
+                track_element_t raw_kind=track_element_classify(left_line,right_line,MT9V03X_H,MT9V03X_W);
+                int brick_allowed=brick_owns(&brick) || (track_nav.phase==NAV_NORMAL &&
+                    (raw_kind==TRACK_NONE || raw_kind==TRACK_UNKNOWN));
+                brick_update(&brick,&image[0][0],left_line,right_line,
+                    track_nav.width,track_nav.learned,MT9V03X_H,MT9V03X_W,
+                    now,speed_distance_counts,brick_allowed);
+                if(brick_owns(&brick)) {
+                    // Freeze learned road width and element confirmation during a pass.
+                    memset(&track_detector,0,sizeof track_detector);
+                    for(int y=0;y<MT9V03X_H;++y)
+                        track_nav.path_valid[y]=brick_pair(left_line[y],right_line[y],MT9V03X_W);
+                    brick_apply(&brick,&image[0][0],left_line,right_line,
+                        track_nav.width,track_nav.learned,control_mid,track_nav.path_valid,
+                        MT9V03X_H,MT9V03X_W);
+                    track_nav.drive_valid=brick.valid && track_nav.path_valid[near_row] && track_nav.path_valid[far_row];
+                } else {
+                    track_element_observe(&track_detector,left_line,right_line,
+                        MT9V03X_H,MT9V03X_W,now);
+                    track_nav_update(&track_nav, &track_detector, left_line, right_line, &image[0][0],
+                        control_left, control_right, control_mid, MT9V03X_H, MT9V03X_W, now);
+                }
             }
             float mid_err = (MT9V03X_W / 2) - control_mid[near_row];
             float line_change = (float)control_mid[far_row] - control_mid[near_row];
@@ -391,6 +425,8 @@ int main(void)
             if (!stopped && zebra.phase == ZEBRA_NORMAL &&
                 track_nav.phase != NAV_NORMAL && !track_nav.drive_valid)
                 speed_limit = 0.0f;
+            if(brick_owns(&brick) && speed_limit>BRICK_SPEED) speed_limit=BRICK_SPEED;
+            if(brick.phase!=BRICK_IDLE && !brick.valid) speed_limit=0.0f;
             Speed_Plan_Update(mid_err, line_change,
                               speed_line_valid, speed_limit);
 
@@ -399,7 +435,9 @@ int main(void)
             tmp_duty = MAX(tmp_duty,MIN(SERVO_MOTOR_L_MAX,SERVO_MOTOR_R_MAX));
             tmp_duty = MIN(tmp_duty,MAX(SERVO_MOTOR_L_MAX,SERVO_MOTOR_R_MAX));
             // 退出时过滤不稳定边线，并对连续输出限速；转向接稳后才恢复直道加速。
+#if ZEBRA_ENABLE
             tmp_duty = zebra_steering(&zebra, tmp_duty, now);
+#endif
             if (stopped) tmp_duty = ZEBRA_STRAIGHT_ANGLE;
             pwm_set_duty(SERVO_MOTOR_PWM, SERVO_MOTOR_DUTY(tmp_duty));
 
@@ -408,17 +446,26 @@ int main(void)
             const char *road_state = "UNKNOWN";
             if (stopped) road_state = "STOP";
             else if (passing) road_state = "ZEBRA";
+            else if (brick_owns(&brick)) road_state=(brick.side?brick.side:brick.candidate)==1?"BRICK_L":"BRICK_R";
             else if (track_nav.phase != NAV_NORMAL && track_nav.element == TRACK_CROSS)
                 road_state = "CROSS";
             else if (track_nav.phase != NAV_NORMAL && track_nav.element == TRACK_ROUND_LEFT)
                 road_state = "ROUND_L";
             else if (track_nav.phase != NAV_NORMAL && track_nav.element == TRACK_ROUND_RIGHT)
                 road_state = "ROUND_R";
-            else if (speed_line_valid)
-                road_state = (func_abs(mid_err) <= SPEED_BEND_START &&
-                              func_abs(line_change) <= SPEED_BEND_START) ? "STRAIGHT" : "CURVE";
-            Wireless_State_Update(road_state, track_nav_name(track_nav.phase),
-                track_element_name(track_detector.candidate), (uint8)zebra_race.phase,
+            else
+            {
+                uint8_t shape = track_road_shape(left_line, right_line, MT9V03X_H, MT9V03X_W);
+                if (shape) road_state = shape == 1 ? "STRAIGHT" : "CURVE";
+            }
+            Wireless_Path_Update(track_nav.path_valid[near_row],track_nav.path_valid[far_row],
+                track_nav.learned[near_row],track_nav.learned[far_row],track_nav.drive_valid);
+            Wireless_Guide_Update(control_mid[near_row],control_mid[far_row],
+                track_nav.phase==NAV_ENTER || track_nav.phase==NAV_APPROACH ? track_nav.entry_guide : 0);
+            Wireless_Apex_Update(track_nav.apex_valid, track_nav.apex_x, track_nav.apex_y);
+            Wireless_Brick_Update((uint8)brick.phase,brick.side,brick.travel);
+            Wireless_State_Update(road_state, brick_owns(&brick)?brick_name(&brick):track_nav_name(track_nav.phase),
+                track_element_name(track_detector.candidate), (uint8)(ZEBRA_ENABLE ? zebra_race.phase : 255),
                 (uint8)(speed_limit <= 0.0f), now);
 #endif
 #if WIRELESS_IMAGE_ENABLE
@@ -437,10 +484,15 @@ int main(void)
             tft180_displayimage03x((uint8_t *)image, 125, 80);
             char status_row[22];
             snprintf(status_row, sizeof(status_row), "S:%-5.5s C:%-5.5s      ",
-                stopped ? "STOP" : track_nav_name(track_nav.phase),
-                track_element_name(track_detector.candidate));
+                stopped ? "STOP" : (brick_owns(&brick)?brick_name(&brick):track_nav_name(track_nav.phase)),
+                brick_owns(&brick)?((brick.side?brick.side:brick.candidate)==1?"BRK-L":"BRK-R"):
+                    track_element_name(track_detector.candidate));
             tft180_show_string(0, 82, status_row);
+#if ZEBRA_ENABLE
             tft180_show_string(0, 92, zebra_status(&zebra, &zebra_race, zebra_candidate));
+#else
+            tft180_show_string(0, 92, "Z:OFF                ");
+#endif
 
             // 图像占用 y=0..79；识别状态及数字在下方，6x8 字体。
             // 保留完整 int16 位数，避免三位显示截断真实异常值。

@@ -11,10 +11,10 @@ typedef int16_t int16;
 #define LPUART8 8
 #define kLPUART_TxDataRegEmptyFlag 1
 #define __DMB() ((void)0)
-static uint32 control_time_ms, irq_mask;
+static uint32 control_time_ms, irq_mask, speed_distance_counts;
 static float speed_target;
 static int16 encoder_data_1, encoder_data_2;
-static uint8 actual[256], expected[256];
+static uint8 actual[288], expected[288];
 static unsigned used;
 static int busy, enabled, capacity;
 static uint32 __get_PRIMASK(void) { return irq_mask; }
@@ -26,7 +26,7 @@ static int LPUART_GetStatusFlags(int uart) { (void)uart; return capacity > 0; }
 static void LPUART_WriteByte(int uart, uint8 b)
 {
     (void)uart;
-    assert(!busy && capacity > 0 && used < 256);
+    assert(!busy && capacity > 0 && used < 288);
     actual[used++] = b;
     --capacity;
 }
@@ -38,7 +38,7 @@ static void check_frame(float target, int16 left, int16 right)
     unsigned expected_length;
     Wireless_State_Update("ROUND_L", "ENTER", "LEFT", 1, 0, control_time_ms);
     expected_length = (unsigned)snprintf((char *)expected, sizeof(expected),
-        "ms=%lu tgt=%.1f L=%d R=%d avg=%.1f road=ROUND_L nav=ENTER cand=LEFT zebra=ARMED blocked=0 stale=0\r\n",
+        "ms=%lu tgt=%.1f L=%d R=%d avg=%.1f road=ROUND_L nav=ENTER cand=LEFT zebra=ARMED blocked=0 stale=0 arc=0:0,0 path=00 learn=00 drive=0 mid=0,0 entry=0 brick=0 bside=0 bdist=0 odo=0\r\n",
         (unsigned long)control_time_ms, (double)target, (int)left, (int)right,
         ((double)left + right) * 0.5);
     speed_target = target; encoder_data_1 = left; encoder_data_2 = right;
@@ -92,10 +92,36 @@ int main(void)
     assert(wireless_speed_sent == 4);
     enabled = 1;
     Wireless_Speed_Tx_IRQHandler(); assert(!enabled); // Completion race.
+    Wireless_Apex_Update(1,60,40);
+    Wireless_Guide_Update(82,94,1);
+    control_time_ms += 100;
+    Wireless_State_Update("ROUND_L","ENTER","LEFT",1,0,control_time_ms);
+    Wireless_Speed_Poll();
+    assert(strstr((char *)wireless_speed_packet,"arc=1:60,40 path=00 learn=00 drive=0 mid=82,94 entry=1 brick=0 bside=0 bdist=0 odo=0\r\n") != NULL);
+    used=0; capacity=256;
+    while(wireless_speed_active) Wireless_Speed_Tx_IRQHandler();
     control_time_ms += 400;
     Wireless_Speed_Poll();
     assert(strstr((char *)wireless_speed_packet, "road=UNKNOWN") != NULL);
-    assert(strstr((char *)wireless_speed_packet, "stale=1\r\n") != NULL);
+    assert(strstr((char *)wireless_speed_packet, "stale=1 arc=0:0,0 path=00 learn=00 drive=0 mid=82,94 entry=0 brick=0 bside=0 bdist=0 odo=0\r\n") != NULL);
+    used=0; capacity=256;
+    while(wireless_speed_active) Wireless_Speed_Tx_IRQHandler();
+    control_time_ms += 100;
+    Wireless_State_Update("STRAIGHT","RUN","NONE",255,0,control_time_ms);
+    Wireless_Speed_Poll();
+    assert(strstr((char *)wireless_speed_packet,"zebra=OFF ") != NULL);
+    used=0; capacity=288;
+    while(wireless_speed_active) Wireless_Speed_Tx_IRQHandler();
+    control_time_ms=UINT32_MAX;
+    speed_distance_counts=UINT32_MAX;
+    Wireless_Brick_Update(2,2,UINT32_MAX);
+    Wireless_State_Update("BRICK_R","HOLD ","UNKNOWN",255,0,control_time_ms);
+    encoder_data_1=encoder_data_2=INT16_MIN;
+    Wireless_Speed_Poll();
+    assert(wireless_speed_active && wireless_speed_length<288);
+    assert(strstr((char *)wireless_speed_packet,"brick=2 bside=2 bdist=4294967295 odo=4294967295\r\n"));
+    used=0; capacity=288;
+    while(wireless_speed_active) Wireless_Speed_Tx_IRQHandler();
     Wireless_Speed_Show();
     puts("PASS: ASCII states and stale detection, 10Hz, raw signed encoders, snapshots, RTS resume, no busy wait, rollover");
     return 0;

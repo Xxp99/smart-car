@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 USER = ROOT / "镜头组例程" / "demo" / "user"
 
 
-def main(replay=None, output=None):
+def main(replay=None, output=None, zebra_enabled=None):
     compiler = shutil.which("cl")
     if not compiler:
         raise SystemExit("Run from an MSVC Developer Command Prompt")
@@ -31,13 +31,15 @@ def main(replay=None, output=None):
                 '#define MAX(a,b) ((a)>(b)?(a):(b))\n'
                 '#define MIN(a,b) ((a)<(b)?(a):(b))\n'
                 '#define func_abs(a) ((a)<0?-(a):(a))\n')
-        for name in ("pid.h", "img_process.h", "main.h", "zebra_pass.h"):
+        for name in ("pid.h", "img_process.h", "main.h", "zebra_pass.h", "brick_avoid.h"):
             header = (USER / "inc" / name).read_text(encoding="utf-8")
             (temp / name).write_text(header.replace('#include "zf_common_headfile.h"', stub), encoding="utf-8")
         (temp / "frame_control.inc").write_text(
             globals_code + '\nstatic void control_frame(void) {\nunsigned char threshold=127;\n' +
             frame + display + '\n}\nstatic void motor_tick(void) {\n' + tick + '\n}\n', encoding="utf-8")
         defines = ["/DWIRELESS_IMAGE_ENABLE=0", "/DWIRELESS_SPEED_ENABLE=0"] + (["/DREPLAY_MODE"] if replay else [])
+        if zebra_enabled is not None or replay:
+            defines.append("/DZEBRA_ENABLE=" + str(int(True if zebra_enabled is None else zebra_enabled)))
         subprocess.run([compiler, *defines, "/nologo", "/std:c11", "/utf-8", "/W3", f"/I{temp}",
                         str(USER / "src/img_process.c"), str(USER / "src/pid.c"),
                         str(ROOT / "tests/test_race_control.c"),
@@ -51,3 +53,4 @@ def main(replay=None, output=None):
 
 if __name__ == "__main__":
     main()
+    main(zebra_enabled=True)
