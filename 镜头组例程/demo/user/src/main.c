@@ -511,10 +511,10 @@ int main(void)
                 uint8_t shape = track_road_shape(left_line, right_line, MT9V03X_H, MT9V03X_W);
                 if (shape) road_state = shape == 1 ? "STRAIGHT" : "CURVE";
             }
-            char nav_extra[384];
+            char nav_extra[448];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u",
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
                 (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
@@ -538,7 +538,12 @@ int main(void)
                 (unsigned)track_nav.exit_evidence,(int)track_nav.exit_guide_slope,
                 (unsigned)control_mid[near_row],(unsigned)control_mid[far_row],
                 (int)(mid_err*10.0f),(int)(tmp_duty*10.0f),
-                (unsigned)track_nav.ring_edge_turn_hint,(unsigned)track_nav.exit_path_frames);
+                (unsigned)track_nav.ring_edge_turn_hint,(unsigned)track_nav.exit_path_frames,
+                (unsigned)zebra_candidate,(unsigned)zebra.phase,
+                (unsigned)zebra.hits,(unsigned)zebra.clear,
+                (unsigned)zebra_lane.current,
+                (unsigned)control_mid[near_row],(unsigned)control_mid[far_row],
+                (unsigned)passing);
             Wireless_Nav_Update(nav_extra);
             Wireless_Path_Update(track_nav.path_valid[near_row],track_nav.path_valid[far_row],
                 track_nav.learned[near_row],track_nav.learned[far_row],track_nav.drive_valid);
