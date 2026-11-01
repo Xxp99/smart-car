@@ -552,6 +552,7 @@ static int nav_pair(uint8_t left, uint8_t right, uint8_t cols)
 
 static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
 {
+    track_nav_phase_t previous_phase = nav->phase;
     if (phase == NAV_SLOW &&
         (nav->phase == NAV_APPROACH || nav->phase == NAV_ENTER ||
          nav->phase == NAV_INSIDE || nav->phase == NAV_EXIT) &&
@@ -567,6 +568,10 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
         nav->slow_resume_phase=NAV_NORMAL;
     }
     nav->stage_ms = now;
+    if (phase == NAV_EXIT &&
+        !(previous_phase == NAV_SLOW && nav->slow_resume_phase == NAV_EXIT) &&
+        (nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT))
+        nav->exit_turn_until_ms = now + NAV_RING_EXIT_TURN_MS;
     nav->feature_frames = 0;
     nav->straight_frames = 0;
     if (phase == NAV_INSIDE || phase == NAV_EXIT || phase == NAV_NORMAL)

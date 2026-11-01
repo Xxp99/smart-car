@@ -450,6 +450,18 @@ int main(void)
 #if ZEBRA_ENABLE
             tmp_duty = zebra_steering(&zebra, tmp_duty, now);
 #endif
+            if (!stopped &&
+                (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
+                (track_nav.phase == NAV_EXIT ||
+                 (track_nav.phase == NAV_SLOW && track_nav.slow_resume_phase == NAV_EXIT)) &&
+                (int32_t)(track_nav.exit_turn_until_ms - now) > 0)
+            {
+                // 出环短时按环岛方向转向，再恢复出口视觉循迹。
+                tmp_duty = servo_motor_duty_middle +
+                    (track_nav.element == TRACK_ROUND_LEFT ? NAV_RING_EXIT_TURN_ANGLE : -NAV_RING_EXIT_TURN_ANGLE);
+                tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+                tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+            }
             if (stopped) tmp_duty = ZEBRA_STRAIGHT_ANGLE;
             pwm_set_duty(SERVO_MOTOR_PWM, SERVO_MOTOR_DUTY(tmp_duty));
 

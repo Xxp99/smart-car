@@ -70,6 +70,8 @@ const char *track_element_name(track_element_t element);
 #define NAV_RING_TIMEOUT_MS      (15000u) // 7/8日志环岛完整一圈超过8秒，环岛单独放宽超时
 #define NAV_RECOVER_MS           (600u)
 #define NAV_RING_RECOVER_MS      (1200u)
+#define NAV_RING_EXIT_TURN_MS    (300u)  // 出环后固定方向转向时长
+#define NAV_RING_EXIT_TURN_ANGLE (12.0f) // 出环固定转向角度
 #define NAV_RECOVER_TIMEOUT_MS   (3000u)
 #define NAV_FAR_SUPPORT_ROWS    (6) // 连续真实双边线用于远端道路方向
 #define NAV_FAR_MAX_SLOPE        (2) // 每行中线最大变化像素
@@ -112,7 +114,7 @@ typedef struct
     track_nav_fault_t fault;
     ring_vision_t vision;
     track_element_t element;
-    uint32_t started_ms, stage_ms, last_path_ms, apex_ms;
+    uint32_t started_ms, stage_ms, last_path_ms, apex_ms, exit_turn_until_ms;
     uint8_t feature_frames, straight_frames, exit_confirm_frames;
     uint8_t exit_anchor, guide_valid, drive_valid, entry_pending;
     uint8_t exit_guide_row, exit_guide_center, exit_guide_valid;

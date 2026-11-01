@@ -4,7 +4,7 @@
 #include "zf_common_headfile.h"
 
 // 左右轮共用动态目标速度，单位：编码器计数/采样周期（不是 RPM）。
-#define SPEED_STRAIGHT_TARGET    (70.0f)
+#define SPEED_STRAIGHT_TARGET    (50.0f)
 #define SPEED_CURVE_TARGET       (50.0f)  // 弯道/环岛目标速度再次小幅提高
 #define SPEED_BEND_START         (5.0f)   // 像素偏差不超过此值时使用直道速度
 #define SPEED_BEND_FULL          (30.0f)  // 达到此值时使用最低弯道速度
