@@ -305,13 +305,6 @@ int main(void)
 #if WIRELESS_IMAGE_ENABLE
             Wireless_Image_Begin((const uint8 *)image);
 #endif
-            uint8_t ring_active =
-                ((track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
-                 track_nav.phase != NAV_NORMAL) ||
-                track_detector.candidate == TRACK_ROUND_LEFT ||
-                track_detector.candidate == TRACK_ROUND_RIGHT ||
-                track_detector.confirmed == TRACK_ROUND_LEFT ||
-                track_detector.confirmed == TRACK_ROUND_RIGHT;
             // 获取直方图
             get_hist_gram((uint8_t *)image, MT9V03X_H, MT9V03X_W, hist_gram);
             unsigned char threshold = get_threshold_otsu(hist_gram);
@@ -324,8 +317,7 @@ int main(void)
             memcpy(control_right, right_line, sizeof(control_right));
             memcpy(control_mid, mid_line, sizeof(control_mid));
 #if ZEBRA_ENABLE
-            uint8_t zebra_candidate = ring_active ? 0 :
-                zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
+            uint8_t zebra_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
             for (unsigned y = 0; y < MT9V03X_H; ++y)
             {
                 unsigned black = 0;
@@ -361,15 +353,14 @@ int main(void)
             // 候选只减速；连续3帧确认后才固定90，不再跟随条纹产生的假边线。
             uint8_t finishing = zebra_race.phase == ZEBRA_RACE_PASS ||
                                 zebra_race.phase == ZEBRA_RACE_CLEAR;
-            uint8_t passing = !ring_active &&
-                (zebra_slow(&zebra, zebra_candidate) || finishing);
+            uint8_t passing = zebra_slow(&zebra, zebra_candidate) || finishing;
 #else
             uint8_t path_recovered = 0, stopped = 0, finishing = 0, passing = 0;
 #endif
             track_nav.apex_valid = 0; // No current apex until this frame runs navigation.
             track_nav.entry_guide = 0;
             memset(&track_nav.vision,0,sizeof track_nav.vision);
-            if (!ring_active && (zebra.phase != ZEBRA_NORMAL || finishing || stopped))
+            if (zebra.phase != ZEBRA_NORMAL || finishing || stopped)
             {
                 memset(&brick,0,sizeof brick);
                 // 斑马线确认后才接管；候选仅减速，不销毁现有导航阶段。
@@ -384,7 +375,7 @@ int main(void)
                 track_nav.last_path_ms = now - NAV_HOLD_MS - 1u;
                 memset(track_nav.path_valid, 0, sizeof(track_nav.path_valid));
             }
-            else if (!ring_active && zebra_candidate)
+            else if (zebra_candidate)
             {
                 memset(&brick,0,sizeof brick);
                 track_nav.apex_hits = 0;
@@ -445,7 +436,7 @@ int main(void)
                 track_nav_request_ring_exit(&track_nav, MT9V03X_H, MT9V03X_W, now);
                 ring_edge_turn_frames = 0;
             }
-            if (passing && !stopped && !ring_active)
+            if (passing && !stopped)
             {
                 // 条纹会干扰逐行找边；用外侧暗背景重建赛道边界和中线。
                 zebra_lane_build(&zebra_lane, &image[0][0], track_nav.width,
@@ -481,7 +472,7 @@ int main(void)
             // 退出时过滤不稳定边线，并对连续输出限速；转向接稳后才恢复直道加速。
 #if ZEBRA_ENABLE
             tmp_duty = zebra_lane_steering(&zebra_lane, tmp_duty,
-                zebra_lane.current, passing && !stopped && !ring_active,
+                zebra_lane.current, passing && !stopped,
                 now, last_servo_angle, servo_motor_duty_middle);
 #endif
             if (!stopped &&
