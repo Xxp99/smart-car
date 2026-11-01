@@ -570,8 +570,10 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
     nav->stage_ms = now;
     if (phase == NAV_EXIT &&
         !(previous_phase == NAV_SLOW && nav->slow_resume_phase == NAV_EXIT) &&
-        (nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT))
+        (nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT)) {
         nav->exit_turn_until_ms = now + NAV_RING_EXIT_TURN_MS;
+        nav->exit_path_frames = 0;
+    }
     nav->feature_frames = 0;
     nav->straight_frames = 0;
     if (phase == NAV_INSIDE || phase == NAV_EXIT || phase == NAV_NORMAL)
@@ -963,14 +965,15 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav_stage(nav, NAV_EXIT, now_ms);
     }
     else if (nav->phase == NAV_EXIT && elapsed >= NAV_RING_EXIT_MIN_MS &&
-             nav->straight_frames >= NAV_RING_EXIT_STRAIGHT_FRAMES)
+             nav->exit_path_frames >= NAV_RING_EXIT_STRAIGHT_FRAMES)
         nav_stage(nav, NAV_RECOVER, now_ms);
     else if (nav->phase == NAV_CROSS && elapsed >= NAV_STAGE_MIN_MS &&
              nav->straight_frames >= NAV_EXIT_STRAIGHT_FRAMES)
         nav_stage(nav, NAV_RECOVER, now_ms);
     else if ((nav->phase == NAV_RECOVER || nav->phase == NAV_SLOW) &&
              elapsed >= (ring_nav ? NAV_RING_RECOVER_MS : NAV_RECOVER_MS) &&
-             nav->straight_frames >= (ring_nav ? NAV_RING_EXIT_STRAIGHT_FRAMES : NAV_EXIT_STRAIGHT_FRAMES) &&
+             (ring_nav ? nav->exit_path_frames >= NAV_RING_EXIT_STRAIGHT_FRAMES :
+                         nav->straight_frames >= NAV_EXIT_STRAIGHT_FRAMES) &&
              detector->confirmed == TRACK_NONE &&
              (!ring_nav || (nav->phase == NAV_RECOVER || nav->slow_resume_phase == NAV_EXIT)))
     {
@@ -1159,6 +1162,14 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     if (nav->path_valid[near] && nav->path_valid[far]) nav->last_path_ms = now_ms;
     nav->drive_valid = (nav->path_valid[near] && nav->path_valid[far]) ||
         (nav->phase != NAV_NORMAL && now_ms-nav->last_path_ms <= path_hold_ms);
+    if (ring_nav && (nav->phase == NAV_EXIT || nav->phase == NAV_RECOVER ||
+        (nav->phase == NAV_SLOW && nav->slow_resume_phase == NAV_EXIT)))
+    {
+        if (nav->path_valid[near] && nav->path_valid[far]) {
+            if (nav->exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES)
+                ++nav->exit_path_frames;
+        } else nav->exit_path_frames = 0;
+    }
     if (nav->phase != NAV_NORMAL && nav->phase != NAV_SLOW &&
              now_ms - nav->last_path_ms > path_hold_ms)
     {
