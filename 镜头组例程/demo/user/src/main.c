@@ -433,10 +433,7 @@ int main(void)
             float speed_limit = stopped ? 0.0f :
                 (passing ? ZEBRA_PASS_SPEED :
                  (round_pending || track_nav.phase != NAV_NORMAL ? SPEED_CURVE_TARGET : SPEED_STRAIGHT_TARGET));
-            // 无可信路径且短时保持耗尽时请求可恢复停车，不以35盲行。
-            if (!stopped && zebra.phase == ZEBRA_NORMAL &&
-                track_nav.phase != NAV_NORMAL && !track_nav.drive_valid)
-                speed_limit = 0.0f;
+            // 环岛补线暂时无效时仍按环岛限速继续运行，不因路径保持超时将速度清零。
             if(brick_owns(&brick) && speed_limit>BRICK_SPEED) speed_limit=BRICK_SPEED;
             if(brick.phase!=BRICK_IDLE && !brick.valid) speed_limit=0.0f;
             Speed_Plan_Update(mid_err, line_change,
