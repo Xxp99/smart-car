@@ -4,7 +4,7 @@
 #include <string.h>
 
 #ifndef BRICK_ENABLE
-#define BRICK_ENABLE 1
+#define BRICK_ENABLE 0
 #endif
 #define BRICK_SPEED 45.0f
 #define BRICK_CONFIRM_FRAMES 3

@@ -6,8 +6,8 @@
 // Mirrors zf_device_detector: grayscale image then three X-only boundaries.
 // One immutable packet; no blocking writes, no partial packet replacement.
 // Width is a multiple of four for grayscale bitmap row alignment.
-#define WIRELESS_IMAGE_WIDTH 96u
-#define WIRELESS_IMAGE_HEIGHT 60u
+#define WIRELESS_IMAGE_WIDTH 128u
+#define WIRELESS_IMAGE_HEIGHT 80u
 #define WIRELESS_IMAGE_PIXELS (WIRELESS_IMAGE_WIDTH * WIRELESS_IMAGE_HEIGHT)
 #define WIRELESS_IMAGE_BYTES (16u + WIRELESS_IMAGE_PIXELS + 3u * WIRELESS_IMAGE_HEIGHT)
 static uint8 wireless_image_packet[WIRELESS_IMAGE_BYTES];

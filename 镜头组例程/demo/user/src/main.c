@@ -268,6 +268,7 @@ static zebra_pass_t zebra = {0};
 static zebra_race_t zebra_race = {0};
 static track_detector_t track_detector = {0};
 static track_nav_t track_nav = {0};
+static uint8 appr_seen, enter_seen;
 static brick_t brick = {0};
 static uint32 last_navigation_frame_ms;
 static uint8 navigation_frame_initialized;
@@ -353,6 +354,7 @@ int main(void)
 #endif
             track_nav.apex_valid = 0; // No current apex until this frame runs navigation.
             track_nav.entry_guide = 0;
+            memset(&track_nav.vision,0,sizeof track_nav.vision);
             if (zebra.phase != ZEBRA_NORMAL || finishing || stopped)
             {
                 memset(&brick,0,sizeof brick);
@@ -362,6 +364,8 @@ int main(void)
                 track_nav.apex_hits = 0;
                 track_nav.phase = NAV_NORMAL;
                 track_nav.element = TRACK_NONE;
+                track_nav.fault = NAV_FAULT_NONE;
+                memset(&track_nav.vision,0,sizeof track_nav.vision);
                 track_nav.feature_frames = track_nav.straight_frames = 0;
                 track_nav.last_path_ms = now - NAV_HOLD_MS - 1u;
                 memset(track_nav.path_valid, 0, sizeof(track_nav.path_valid));
@@ -372,6 +376,7 @@ int main(void)
                 track_nav.apex_hits = 0;
                 // 候选图像不能推进元素确认或阶段；暂用此前可信路径。
                 track_detector.confirm_count = 0;
+                track_detector.ring_history = track_detector.ring_votes = 0;
                 track_detector.sequence_side = track_detector.sequence_progress = 0;
                 track_nav.feature_frames = track_nav.straight_frames = 0;
                 if (track_nav.phase != NAV_NORMAL)
@@ -382,7 +387,7 @@ int main(void)
             }
             else
             {
-                track_element_t raw_kind=track_element_classify(left_line,right_line,MT9V03X_H,MT9V03X_W);
+                track_element_t raw_kind=track_visual_classify(&track_nav.vision,&image[0][0],left_line,right_line,MT9V03X_H,MT9V03X_W);
                 int brick_allowed=brick_owns(&brick) || (track_nav.phase==NAV_NORMAL &&
                     (raw_kind==TRACK_NONE || raw_kind==TRACK_UNKNOWN));
                 brick_update(&brick,&image[0][0],left_line,right_line,
@@ -398,12 +403,19 @@ int main(void)
                         MT9V03X_H,MT9V03X_W);
                     track_nav.drive_valid=brick.valid && track_nav.path_valid[near_row] && track_nav.path_valid[far_row];
                 } else {
-                    track_element_observe(&track_detector,left_line,right_line,
-                        MT9V03X_H,MT9V03X_W,now);
+                    // 优先采用当前帧A/B轮廓证据；A/B暂时缺失时，保留旧识别器
+                    // 的跨帧开口变化作为后备，日志7/8表明它曾是实际候选来源。
+                    if (raw_kind == TRACK_UNKNOWN || raw_kind == TRACK_NONE)
+                        track_element_observe(&track_detector,left_line,right_line,
+                            MT9V03X_H,MT9V03X_W,now);
+                    else
+                        abc_element_update(&track_detector,raw_kind);
                     track_nav_update(&track_nav, &track_detector, left_line, right_line, &image[0][0],
                         control_left, control_right, control_mid, MT9V03X_H, MT9V03X_W, now);
                 }
             }
+            if(track_nav.phase==NAV_APPROACH) appr_seen=1;
+            if(track_nav.phase==NAV_ENTER) enter_seen=1;
             float mid_err = (MT9V03X_W / 2) - control_mid[near_row];
             float line_change = (float)control_mid[far_row] - control_mid[near_row];
             uint8_t speed_line_valid = passing ? path_recovered :
@@ -415,7 +427,7 @@ int main(void)
                 speed_line_valid = 1; // 固定直行阶段直接申请斑马线通过速度，不依赖条纹中的边线。
                 memset(control_mid, MT9V03X_W / 2, sizeof(control_mid));
             }
-            // 环岛候选确认期间先减速，等待5帧确认；接管及恢复阶段继续限速。
+            // 环岛候选先减速，最近5帧同侧命中3次确认；接管及恢复继续限速。
             uint8_t round_pending = track_detector.candidate == TRACK_ROUND_LEFT ||
                                     track_detector.candidate == TRACK_ROUND_RIGHT;
             float speed_limit = stopped ? 0.0f :
@@ -458,6 +470,33 @@ int main(void)
                 uint8_t shape = track_road_shape(left_line, right_line, MT9V03X_H, MT9V03X_W);
                 if (shape) road_state = shape == 1 ? "STRAIGHT" : "CURVE";
             }
+            char nav_extra[384];
+            ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
+            snprintf(nav_extra,sizeof nav_extra,
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u age=%lu Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d",
+                (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
+                (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
+                (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
+                (unsigned long)(now-track_nav.stage_ms),
+                (unsigned)vl->lost,(unsigned)vl->monotonic,
+                (unsigned)vl->a.valid,(unsigned)vl->a.x,(unsigned)vl->a.y,
+                (unsigned)vl->b.valid,(unsigned)vl->b.x,(unsigned)vl->b.y,
+                (unsigned)vl->c.valid,(unsigned)vl->c.x,(unsigned)vl->c.y,
+                (unsigned)vr->lost,(unsigned)vr->monotonic,
+                (unsigned)vr->a.valid,(unsigned)vr->a.x,(unsigned)vr->a.y,
+                (unsigned)vr->b.valid,(unsigned)vr->b.x,(unsigned)vr->b.y,
+                (unsigned)vr->c.valid,(unsigned)vr->c.x,(unsigned)vr->c.y,
+                (unsigned)track_nav.width[near_row],(unsigned)track_nav.width[far_row],(unsigned)threshold,
+                (unsigned)track_nav.entry_gap_valid,(unsigned)track_nav.entry_gap_rows,
+                (unsigned)track_nav.entry_edge_rows,(unsigned)track_nav.entry_guided_rows,
+                (unsigned)track_nav.apex_valid,(unsigned)track_nav.apex_x,(unsigned)track_nav.apex_y,
+                (unsigned)track_nav.exit_guide_valid,(unsigned)track_nav.exit_guide_row,
+                (unsigned)track_nav.exit_guide_center,(unsigned)track_nav.exit_anchor,
+                (unsigned)track_nav.exit_reject_rows,
+                (unsigned)track_nav.exit_evidence,(int)track_nav.exit_guide_slope,
+                (unsigned)control_mid[near_row],(unsigned)control_mid[far_row],
+                (int)(mid_err*10.0f),(int)(tmp_duty*10.0f));
+            Wireless_Nav_Update(nav_extra);
             Wireless_Path_Update(track_nav.path_valid[near_row],track_nav.path_valid[far_row],
                 track_nav.learned[near_row],track_nav.learned[far_row],track_nav.drive_valid);
             Wireless_Guide_Update(control_mid[near_row],control_mid[far_row],
@@ -510,10 +549,16 @@ int main(void)
             tft180_show_string(0, 122, "LMAX:");
             tft180_show_int(36, 122, encoder_left_max, 5);
 #endif
-            tft180_show_string(0, 132, "LBAD:");
-            tft180_show_uint(36, 132, encoder_left_abnormal_count, 10);
-            tft180_show_string(0, 142, "PWM2:");
-            tft180_show_float(36, 142, speed_pwm, 4, 2);
+            char ring_row[22];
+            int side=track_nav.element==TRACK_ROUND_RIGHT || track_detector.candidate==TRACK_ROUND_RIGHT;
+            ring_side_t *v=&track_nav.vision.side[side];
+            snprintf(ring_row,sizeof ring_row,"%c A%u B%u C%u F%u       ",side?'R':'L',
+                (unsigned)v->a.valid,(unsigned)v->b.valid,(unsigned)v->c.valid,(unsigned)track_nav.fault);
+            tft180_show_string(0,132,ring_row);
+            snprintf(ring_row,sizeof ring_row,"AP%u EN%u AS%u ES%u      ",
+                (unsigned)(track_nav.phase==NAV_APPROACH),(unsigned)(track_nav.phase==NAV_ENTER),
+                (unsigned)appr_seen,(unsigned)enter_seen);
+            tft180_show_string(0,142,ring_row);
             tft180_show_string(0, 152, "TGT:");
             tft180_show_float(36, 152, speed_target, 2, 1);
 

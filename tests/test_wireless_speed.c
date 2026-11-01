@@ -14,7 +14,7 @@ typedef int16_t int16;
 static uint32 control_time_ms, irq_mask, speed_distance_counts;
 static float speed_target;
 static int16 encoder_data_1, encoder_data_2;
-static uint8 actual[288], expected[288];
+static uint8 actual[768], expected[768];
 static unsigned used;
 static int busy, enabled, capacity;
 static uint32 __get_PRIMASK(void) { return irq_mask; }
@@ -26,7 +26,7 @@ static int LPUART_GetStatusFlags(int uart) { (void)uart; return capacity > 0; }
 static void LPUART_WriteByte(int uart, uint8 b)
 {
     (void)uart;
-    assert(!busy && capacity > 0 && used < 288);
+    assert(!busy && capacity > 0 && used < 768);
     actual[used++] = b;
     --capacity;
 }
@@ -122,6 +122,13 @@ int main(void)
     assert(strstr((char *)wireless_speed_packet,"brick=2 bside=2 bdist=4294967295 odo=4294967295\r\n"));
     used=0; capacity=288;
     while(wireless_speed_active) Wireless_Speed_Tx_IRQHandler();
+    control_time_ms+=100;
+    Wireless_Nav_Update(" F=4 OK=RND-L V=3 Lfeat=1/0 A=1/50/90 B=1/60/40 C=0/0/0");
+    Wireless_Speed_Poll();
+    assert(strstr((char *)wireless_speed_packet," F=4 OK=RND-L V=3"));
+    used=0; capacity=768;
+    while(wireless_speed_active) Wireless_Speed_Tx_IRQHandler();
+    assert(used==wireless_speed_length && actual[used-1]=='\n');
     Wireless_Speed_Show();
     puts("PASS: ASCII states and stale detection, 10Hz, raw signed encoders, snapshots, RTS resume, no busy wait, rollover");
     return 0;

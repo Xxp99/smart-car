@@ -336,8 +336,8 @@ static track_element_t round_classify(const uint8_t *left, const uint8_t *right,
     return result;
 }
 
-track_element_t track_element_classify(const uint8_t *left, const uint8_t *right,
-                                      uint8_t rows, uint8_t cols)
+static track_element_t track_cross_classify(const uint8_t *left, const uint8_t *right,
+                                            uint8_t rows, uint8_t cols)
 {
     int start = rows / 8, end = rows - 5;
     int saw_loss = 0;
@@ -376,11 +376,21 @@ track_element_t track_element_classify(const uint8_t *left, const uint8_t *right
         // their separation as a cross/normal-road expansion ratio.
         result = TRACK_CROSS;
     }
+    return result != TRACK_NONE ? result : (saw_loss ? TRACK_UNKNOWN : TRACK_NONE);
+}
+
+track_element_t track_element_classify(const uint8_t *left, const uint8_t *right,
+                                      uint8_t rows, uint8_t cols)
+{
+    int saw_loss = 0;
+    if (!left || !right || rows < 40 || cols < 40) return TRACK_UNKNOWN;
+    track_element_t cross_result = track_cross_classify(left, right, rows, cols);
     track_element_t round_result = round_classify(left, right, rows, cols, &saw_loss);
     if (round_result == TRACK_UNKNOWN ||
-        (round_result != TRACK_NONE && result != TRACK_NONE)) return TRACK_UNKNOWN;
+        (round_result != TRACK_NONE && cross_result == TRACK_CROSS)) return TRACK_UNKNOWN;
     if (round_result != TRACK_NONE) return round_result;
-    return result != TRACK_NONE ? result : (saw_loss ? TRACK_UNKNOWN : TRACK_NONE);
+    if (cross_result == TRACK_CROSS) return TRACK_CROSS;
+    return (cross_result == TRACK_UNKNOWN || saw_loss) ? TRACK_UNKNOWN : TRACK_NONE;
 }
 
 // A clipped opening has only one visible corner. Require a smooth opposite
@@ -424,7 +434,8 @@ void track_element_observe(track_detector_t *state,const uint8_t *left,const uin
 {
     track_element_t candidate=track_element_classify(left,right,rows,cols);
     int side=0,corner=0,kind=0,c=0,k=0;
-    if(candidate==TRACK_UNKNOWN && left && right && rows>=40 && cols>=40) {
+    if((candidate==TRACK_UNKNOWN || candidate==TRACK_NONE) &&
+       left && right && rows>=40 && cols>=40) {
         if(round_partial(left,right,rows,cols,1,&corner,&kind)) side=1;
         if(round_partial(left,right,rows,cols,0,&c,&k)) {
             if(side) side=0;
@@ -543,9 +554,12 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
 {
     nav->phase = phase;
     if (phase==NAV_INSIDE || phase==NAV_EXIT || phase==NAV_NORMAL) nav->entry_pending=0;
+    if (phase==NAV_NORMAL) nav->exit_guide_valid=0;
     nav->stage_ms = now;
     nav->feature_frames = 0;
     nav->straight_frames = 0;
+    if (phase == NAV_INSIDE || phase == NAV_EXIT || phase == NAV_NORMAL)
+        nav->exit_confirm_frames = 0;
 }
 
 // 十字：只连接上下真实边线之间的缺口，不把整片丢线当成可用路径。
@@ -617,7 +631,8 @@ static int nav_exit_road(const track_nav_t *nav, const uint8_t *left,
         int d1 = is_left ? cols-1-after : after;
         if (d0 < cols/ROUND_EXIT_CORNER_MIN_DIV || d1 < cols/ROUND_EXIT_CORNER_MIN_DIV) continue;
         if (nav_far_road(nav,left,right,rows,cols,first-1,row,center,slope) &&
-            *row == first-1) return 1;
+            *row <= first-1 && first-1-*row <= rows/NAV_EXIT_ROW_TOLERANCE_DIV)
+            return 1;
     }
     return 0;
 }
@@ -632,7 +647,7 @@ static void nav_ring_apex(track_nav_t *nav, const uint8_t *binary,
     int found=0, ax=0, ay=0;
     nav->apex_valid=0;
     if (!binary || (nav->phase!=NAV_APPROACH && nav->phase!=NAV_ENTER))
-    { nav->apex_hits=0; return; }
+    { nav->apex_hits=0; nav->apex_valid=0; return; }
     for (int y=rows/8; y<rows*3/5 && !found; ++y)
     for (int x=3; x<cols-3; )
     {
@@ -658,13 +673,16 @@ static void nav_ring_apex(track_nav_t *nav, const uint8_t *binary,
         }
         if(ok && previous_width>=width+2) {found=1;ax=center;ay=y;break;}
     }
-    if (!found) {nav->apex_hits=0;return;}
+    if (!found) {nav->apex_hits=0;nav->apex_valid=0;return;}
     int dx=ax-nav->apex_prev_x,dy=ay-nav->apex_prev_y;
-    if(nav->apex_hits && dx>=-8 && dx<=8 && dy>=-8 && dy<=8)
-    {if(nav->apex_hits<3) ++nav->apex_hits;}
-    else nav->apex_hits=1;
+    // 车速提高时，黑色岛尖会在相邻帧移动超过8像素；按图像尺寸容忍位移，
+    // 仍要求连续两帧的岛尖位置接近，避免单帧噪点接管补线。
+    if(nav->apex_hits && dx>=-cols/12 && dx<=cols/12 &&
+       dy>=-rows/12 && dy<=rows/12)
+    {if(nav->apex_hits<2) ++nav->apex_hits;}
+    else {nav->apex_hits=1;nav->apex_valid=0;}
     nav->apex_prev_x=(uint8_t)ax; nav->apex_prev_y=(uint8_t)ay;
-    if(nav->apex_hits>=3)
+    if(nav->apex_hits>=2)
     {nav->apex_x=(uint8_t)ax;nav->apex_y=(uint8_t)ay;nav->apex_valid=1;}
 }
 
@@ -678,16 +696,20 @@ static void nav_ring_contour(const track_nav_t *nav, const uint8_t *binary,
     int previous_left=nav->apex_x, previous_right=nav->apex_x;
     for (int y=nav->apex_y; y<rows; ++y)
     {
-        int x=previous_left, l, r;
-        while (x<=previous_right && binary[y*cols+x]!=0) ++x;
-        if (x>previous_right) break;
+        // 沿岛边逐行跟踪时允许小幅横移，否则斜坡状岛尖一偏1像素就会断线。
+        int reach=cols/20;
+        int search_left=nav_clip(previous_left-reach,1,cols-2);
+        int search_right=nav_clip(previous_right+reach,1,cols-2);
+        int x=search_left, l, r;
+        while (x<=search_right && binary[y*cols+x]!=0) ++x;
+        if (x>search_right) break;
         l=r=x;
         while (l>1 && binary[y*cols+l-1]==0) --l;
         while (r<cols-2 && binary[y*cols+r+1]==0) ++r;
-        // More than one overlapping run is ambiguous (noise or a branch).
-        for (x=r+1; x<=previous_right; ++x)
+        // 搜索带内出现第二段黑色区域时视作分叉/噪声，不拿它补线。
+        for (x=r+1; x<=search_right; ++x)
             if (binary[y*cols+x]==0) break;
-        if (x<=previous_right || l<=1 || r>=cols-2 || r-l+1>cols*3/4 ||
+        if (x<=search_right || l<=1 || r>=cols-2 || r-l+1>cols*3/4 ||
             (y>nav->apex_y &&
              (l-previous_left>cols/20 || previous_left-l>cols/20 ||
               r-previous_right>cols/20 || previous_right-r>cols/20))) break;
@@ -710,6 +732,8 @@ static int nav_entry_gap(const uint8_t *left, const uint8_t *right,
     if(a==0) {
         int corner,kind;
         if(!round_partial(left,right,rows,cols,is_left,&corner,&kind) || kind!=1) return 0;
+        // b 是开口下方第一个真实边线行；若整幅图都丢线则没有锚点可供补线。
+        if (b <= 0 || b >= rows) return 0;
         // Current lower corner only; bounded virtual lead, never an old corner.
         *first=b>rows/3?b-rows/3:0; *end=b;
         return row>=*first;
@@ -764,11 +788,17 @@ static void nav_seed_ring_width(track_nav_t *nav, const uint8_t *left,
     }
 }
 
+#include "ring_vision.inc"
+#include "abc_navigation.inc"
+
 void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                       const uint8_t *raw_left, const uint8_t *raw_right, const uint8_t *binary,
                       uint8_t *left, uint8_t *right, uint8_t *mid,
                       uint8_t rows, uint8_t cols, uint32_t now_ms)
 {
+    // 环岛也走本导航器：入口缺口、黑色岛边和出口道路共用一套阶段/补线逻辑。
+    // 视觉 A/B/C 点只保留作调试显示，不能再接管控制路径。
+
     int near = rows * 4 / 5, far = rows * 3 / 5;
     int left_open = 0, right_open = 0, both_open = 0;
     int full = nav_pair(raw_left[near], raw_right[near], cols) &&
@@ -808,7 +838,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     // visible reference edge at both control rows, within the original timeout.
     if (nav->phase==NAV_SLOW && nav->entry_pending && ring_confirmed &&
         nav->element==detector->confirmed && detector->candidate==detector->confirmed &&
-        now_ms-nav->started_ms<NAV_TIMEOUT_MS && nav->learned[near] && nav->learned[far])
+        now_ms-nav->started_ms<NAV_RING_TIMEOUT_MS && nav->learned[near] && nav->learned[far])
     {
         const uint8_t *outer=nav->element==TRACK_ROUND_LEFT?raw_right:raw_left;
         if(round_outer_visible(outer[near],cols) && round_outer_visible(outer[far],cols))
@@ -819,36 +849,65 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     {
         nav->element = detector->confirmed;
         nav->entry_pending = ring_confirmed;
+        nav->exit_guide_valid = 0;
         nav->started_ms = now_ms;
+        nav->fault = !nav->learned[near] || !nav->learned[far] ? NAV_FAULT_WIDTH : NAV_FAULT_NONE;
         nav_stage(nav, !nav->learned[near] || !nav->learned[far] ? NAV_SLOW :
             (nav->element == TRACK_CROSS ? NAV_CROSS : NAV_APPROACH), now_ms);
     }
+    uint32_t element_timeout = (nav->element == TRACK_ROUND_LEFT ||
+                                nav->element == TRACK_ROUND_RIGHT) ?
+                               NAV_RING_TIMEOUT_MS : NAV_TIMEOUT_MS;
     if (nav->phase != NAV_NORMAL && nav->phase != NAV_RECOVER && nav->phase != NAV_SLOW &&
-        now_ms - nav->started_ms >= NAV_TIMEOUT_MS)
+        now_ms - nav->started_ms >= element_timeout)
     {
+        nav->fault = NAV_FAULT_TIMEOUT;
         nav_stage(nav, NAV_SLOW, now_ms);
     }
     if (nav->phase == NAV_RECOVER && now_ms - nav->stage_ms >= NAV_RECOVER_TIMEOUT_MS)
     {
+        nav->fault = NAV_FAULT_RECOVER;
         nav_stage(nav, NAV_SLOW, now_ms);
     }
+    // 本次环岛方向由初次确认结果锁存到NAV_NORMAL，忽略途中反侧候选对路线的影响。
     int is_left = nav->element == TRACK_ROUND_LEFT;
+    int ring_nav = nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT;
     int inner_open = is_left ? left_open : right_open;
     int outer_open = is_left ? right_open : left_open;
     int guide_row = 0, guide_center = 0, guide_slope = 0;
     int exit_evidence = nav_exit_road(nav, raw_left, raw_right, rows, cols,
                                      is_left, &guide_row, &guide_center, &guide_slope);
+    nav->exit_evidence=(uint8_t)exit_evidence;
+    // EXIT端点在IN阶段首次可靠出现时缓存；轮廓短暂抖动时仍沿远端出口方向延伸。
+    if (nav->phase == NAV_INSIDE && exit_evidence) {
+        nav->exit_guide_row = (uint8_t)guide_row;
+        nav->exit_guide_center = (uint8_t)guide_center;
+        nav->exit_guide_slope = (int16_t)guide_slope;
+        nav->exit_guide_valid = 1;
+    }
     nav->guide_valid = 0;
     int feature = 0;
     if (nav->phase == NAV_APPROACH) feature = inner_open >= rows / 20;
     if (nav->phase == NAV_ENTER) feature = full && inner_open == 0 &&
         nav_entry_turn(raw_left,raw_right,near,far,cols,is_left);
-    if (nav->phase == NAV_INSIDE) feature = outer_open >= rows / 20 && both_open == 0 && exit_evidence;
+    int ring_exit_feature = nav->phase == NAV_INSIDE &&
+        outer_open >= rows / 20 && both_open == 0 && exit_evidence;
+    if (nav->phase == NAV_INSIDE)
+    {
+        // 证据短暂消失时只递减一帧，防抖；须累计8帧才接受出口。
+        if (ring_exit_feature)
+        { if (nav->exit_confirm_frames < NAV_RING_EXIT_CONFIRM_FRAMES) ++nav->exit_confirm_frames; }
+        else if (nav->exit_confirm_frames) --nav->exit_confirm_frames;
+    }
+    else nav->exit_confirm_frames = 0;
     if (feature) { if (nav->feature_frames < NAV_FEATURE_FRAMES) ++nav->feature_frames; }
     else nav->feature_frames = 0;
-    if ((nav->phase == NAV_SLOW ? full : straight) && detector->candidate == TRACK_NONE)
+    // 边线几何已连续、道路近远行一致时，UNKNOWN只是尚未分类，不应卡死退出恢复。
+    if ((nav->phase == NAV_SLOW ? full : straight) &&
+        (detector->candidate == TRACK_NONE || detector->candidate == TRACK_UNKNOWN))
     {
-        if (nav->straight_frames < NAV_EXIT_STRAIGHT_FRAMES) ++nav->straight_frames;
+        uint8_t required = ring_nav ? NAV_RING_EXIT_STRAIGHT_FRAMES : NAV_EXIT_STRAIGHT_FRAMES;
+        if (nav->straight_frames < required) ++nav->straight_frames;
     }
     else nav->straight_frames = 0;
 
@@ -859,26 +918,43 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
              nav->feature_frames >= NAV_FEATURE_FRAMES)
         nav_stage(nav, NAV_INSIDE, now_ms);
     else if (nav->phase == NAV_INSIDE && elapsed >= NAV_INSIDE_MIN_MS &&
-             nav->feature_frames >= NAV_FEATURE_FRAMES)
+             nav->exit_confirm_frames >= NAV_RING_EXIT_CONFIRM_FRAMES)
     {
         nav->exit_anchor = nav->last_mid[rows - 1];
         nav_stage(nav, NAV_EXIT, now_ms);
     }
-    else if ((nav->phase == NAV_EXIT || nav->phase == NAV_CROSS) &&
-             elapsed >= NAV_STAGE_MIN_MS && nav->straight_frames >= NAV_EXIT_STRAIGHT_FRAMES)
+    else if (nav->phase == NAV_EXIT && elapsed >= NAV_RING_EXIT_MIN_MS &&
+             nav->straight_frames >= NAV_RING_EXIT_STRAIGHT_FRAMES)
         nav_stage(nav, NAV_RECOVER, now_ms);
-    else if ((nav->phase == NAV_RECOVER || nav->phase == NAV_SLOW) && elapsed >= NAV_RECOVER_MS &&
-             nav->straight_frames >= NAV_EXIT_STRAIGHT_FRAMES && detector->confirmed == TRACK_NONE)
+    else if (nav->phase == NAV_CROSS && elapsed >= NAV_STAGE_MIN_MS &&
+             nav->straight_frames >= NAV_EXIT_STRAIGHT_FRAMES)
+        nav_stage(nav, NAV_RECOVER, now_ms);
+    else if ((nav->phase == NAV_RECOVER || nav->phase == NAV_SLOW) &&
+             elapsed >= (ring_nav ? NAV_RING_RECOVER_MS : NAV_RECOVER_MS) &&
+             nav->straight_frames >= (ring_nav ? NAV_RING_EXIT_STRAIGHT_FRAMES : NAV_EXIT_STRAIGHT_FRAMES) &&
+             detector->confirmed == TRACK_NONE)
     {
         nav_stage(nav, NAV_NORMAL, now_ms);
+        nav->fault = NAV_FAULT_NONE;
         nav->element = TRACK_NONE;
     }
 
     if (nav->phase == NAV_EXIT)
     {
-        // 开口消失后允许继续使用出口双边道路；不退回沿岛边模式。
-        nav->guide_valid = exit_evidence || nav_far_road(nav, raw_left, raw_right,
+        // 开口消失后优先更新真实出口证据；短暂丢失时沿缓存远端道路继续走。
+        int fresh_guide = exit_evidence || nav_far_road(nav, raw_left, raw_right,
             rows, cols, far, &guide_row, &guide_center, &guide_slope);
+        if (fresh_guide) {
+            nav->exit_guide_row = (uint8_t)guide_row;
+            nav->exit_guide_center = (uint8_t)guide_center;
+            nav->exit_guide_slope = (int16_t)guide_slope;
+            nav->exit_guide_valid = 1;
+        } else if (nav->exit_guide_valid) {
+            guide_row = nav->exit_guide_row;
+            guide_center = nav->exit_guide_center;
+            guide_slope = nav->exit_guide_slope;
+        }
+        nav->guide_valid = fresh_guide || nav->exit_guide_valid;
     }
     if (nav->phase == NAV_CROSS)
     {
@@ -894,6 +970,11 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     int entry_open=nav->phase==NAV_ENTER &&
         nav_entry_gap(raw_left,raw_right,near,rows,cols,is_left,&entry_first,&entry_end);
     nav->entry_guide=0;
+    nav->entry_gap_valid=(uint8_t)entry_open;
+    nav->entry_gap_rows=0;
+    nav->entry_edge_rows=0;
+    nav->entry_guided_rows=0;
+    nav->exit_reject_rows=0;
     for (int y = rows / 4; y < rows; ++y)
     {
         int usable = nav_pair(left[y], right[y], cols);
@@ -938,8 +1019,12 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                 target=center+(is_left?-shift:shift);
                 if (shift>0 && target-width/2>0 && target+width/2<cols-1 &&
                     (!binary || binary[y*cols+target]!=0))
-                { center=target; if(y==near) nav->entry_guide=1; }
+                { center=target; ++nav->entry_guided_rows;
+                  if(y==near) nav->entry_guide=1; }
             }
+            if (entry_open && usable && !island_edge[y] &&
+                y>=entry_first && y<entry_end)
+                ++nav->entry_gap_rows;
             if (island_edge[y] &&
                 (nav->phase==NAV_APPROACH || nav->phase==NAV_ENTER))
             {
@@ -950,6 +1035,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                 if (corridor>=cols/10 && candidate-corridor/2>0 &&
                     candidate+corridor/2<cols-1)
                 { center=candidate; width=corridor; usable=1;
+                  ++nav->entry_edge_rows;
                   if(y==near) nav->entry_guide=2; }
             }
             // A current black pixel cannot be accepted as a drivable center,
@@ -968,14 +1054,23 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             usable = 0;
             if (nav->guide_valid && nav->learned[y] && y >= guide_row)
             {
-                // 当前出口道路连接至入EXIT时车前路径，避免继续绕岛。
+                // 当前出口道路连接至入EXIT时车前路径；合成点必须落在白色可行驶区，
+                // 否则不能把穿过黑色岛体/赛道外区域的错误转向当作有效路径。
                 center = guide_center + ((int)nav->exit_anchor - guide_center) *
                          (y-guide_row) / (rows-1-guide_row);
                 usable = center-width/2 > 0 && center+width/2 < cols-1;
+                if (usable && binary && binary[y*cols+center] == 0)
+                { usable=0; ++nav->exit_reject_rows; }
                 if (usable) { left[y] = (uint8_t)(center-width/2);
                               right[y] = (uint8_t)(center+width/2); }
             }
-            else if (y < guide_row) usable = nav_pair(raw_left[y],raw_right[y],cols);
+            if (!usable && nav_pair(raw_left[y],raw_right[y],cols))
+            {
+                // 合成出口线未通过图像可行驶区校验时，回退到本行真实双边线。
+                left[y]=raw_left[y]; right[y]=raw_right[y];
+                center=((int)raw_left[y]+raw_right[y])/2;
+                usable=1;
+            }
         }
         if (nav->phase == NAV_CROSS && !usable && nav->guide_valid &&
             nav->learned[y] && y >= guide_row && y-guide_row <= rows/2)
@@ -1019,6 +1114,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     if (nav->phase != NAV_NORMAL && nav->phase != NAV_SLOW &&
              now_ms - nav->last_path_ms > NAV_HOLD_MS)
     {
+        nav->fault = NAV_FAULT_PATH;
         nav_stage(nav, NAV_SLOW, now_ms);
         // 丢线退出特殊动作的当帧立即撤掉环岛偏移，回到原始中线。
         for (int y = 0; y < rows; ++y)

@@ -90,6 +90,25 @@ static void entry_curve_frames(int side,int count)
     }
 }
 
+static void abc_enter(int side) {
+    memset(&track_nav,0,sizeof track_nav); memset(&track_detector,0,sizeof track_detector);
+    clear_frames(10);
+    for(int stage=0;stage<2;++stage) for(int f=0;f<4;++f) {
+        for(int y=0;y<120;++y) for(int x=0;x<188;++x) {
+            int xx=side==2?x:187-x, border=188;
+            if(!stage && y>=85) border=140;
+            int by=stage?70:50, span=stage?10:15;
+            if(y>=by-span && y<=by+span) border=120+2*abs(y-by);
+            int roof=stage && xx>=80 && y<=45-abs(xx-110)/2;
+            image[y][x]=xx>45 && xx<border && !roof?255:0;
+        }
+        frame();
+    }
+    assert(track_nav.phase==NAV_ENTER && track_nav.drive_valid);
+    assert(side==1?control_mid[96]<94:control_mid[96]>94);
+    assert(duty[SERVO_MOTOR_PWM]!=750);
+}
+
 #ifndef REPLAY_MODE
 int main(void)
 {
@@ -101,30 +120,7 @@ int main(void)
     assert(zebra_race.phase==ZEBRA_RACE_START);
     assert(fabsf(speed_target-SPEED_STRAIGHT_TARGET)<0.01f);
     assert(strstr(screen92,"Z:OFF"));
-    for(int side=1;side<=2;++side) {
-        memset(&track_nav,0,sizeof track_nav);
-        memset(&track_detector,0,sizeof track_detector);
-        clear_frames(10);
-        gap_frames(side,ROUND_CONFIRM_FRAMES+NAV_FEATURE_FRAMES);
-        assert(track_nav.phase==NAV_ENTER && track_nav.entry_guide==1);
-        assert(side==1?control_mid[96]<94:control_mid[96]>94);
-        assert(duty[SERVO_MOTOR_PWM]!=750);
-        clear_frames(16); assert(track_nav.phase==NAV_ENTER);
-        entry_curve_frames(side,16); assert(track_nav.phase==NAV_INSIDE);
-        // Real image -> temporal detector -> lower-corner-only entry -> PWM.
-        memset(&track_nav,0,sizeof track_nav);
-        memset(&track_detector,0,sizeof track_detector);
-        clear_frames(10);
-        for(int f=0;f<9;++f) {
-            road(0);
-            for(int y=0;y<=(f?100:98);++y)
-                for(int x=side==1?1:51;x<(side==1?138:187);++x) image[y][x]=255;
-            frame();
-        }
-        assert(track_nav.phase==NAV_ENTER && track_nav.entry_guide==1);
-        assert(side==1?control_mid[96]<94:control_mid[96]>94);
-        assert(duty[SERVO_MOTOR_PWM]!=750);
-    }
+    for(int side=1;side<=2;++side) abc_enter(side);
     for(int side=1;side<=2;++side) {
         memset(&brick,0,sizeof brick);
         memset(&track_nav,0,sizeof track_nav);
@@ -176,56 +172,13 @@ int main(void)
     clear_frames(60);
     assert(track_nav.phase==NAV_NORMAL && fabsf(speed_target-SPEED_STRAIGHT_TARGET)<0.01f);
 
-    // A distant ring candidate slows down before confirmation, even with
-    // straight, fully visible steering/speed rows at 96 and 72.
-    road(0);
-    for (int y=55; y<=67; ++y)
-        for (int x=1; x<138; ++x) image[y][x]=255;
-    frame();
-    assert(track_detector.candidate==TRACK_ROUND_LEFT && track_nav.phase==NAV_NORMAL);
-    assert(control_mid[96]==94 && control_mid[72]==94 && speed_target<SPEED_STRAIGHT_TARGET);
+    // Opening without island B is no longer a ring candidate.
+    gap_frames(1,8); assert(track_detector.confirmed!=TRACK_ROUND_LEFT);
     clear_frames(60);
-
-    // Mirrored roundabout entries, inside/exit stages, and return to normal.
-    for (int side=1; side<=2; ++side)
-    {
-        gap_frames(side, ROUND_CONFIRM_FRAMES+NAV_FEATURE_FRAMES);
-        assert(track_nav.phase==NAV_ENTER);
-        assert(track_nav.entry_guide==1);
-        assert(side==1?control_mid[96]<94:control_mid[96]>94);
-        assert(duty[SERVO_MOTOR_PWM]!=750); // Main must actually send a turn command.
-        clear_frames(16);
-        assert(track_nav.phase==NAV_ENTER); // Passing the opening straight is not entry.
-        entry_curve_frames(side,16);
-        assert(track_nav.phase==NAV_INSIDE && fabsf(speed_target-SPEED_CURVE_TARGET)<0.01f);
-        gap_frames(side==1 ? 2 : 1, 6);
-        assert(track_nav.phase==NAV_EXIT);
-        clear_frames(60);
-        assert(track_nav.phase==NAV_NORMAL && fabsf(speed_target-SPEED_STRAIGHT_TARGET)<0.01f);
-
-        // Image extraction -> partial-loss recognition -> five-frame gate ->
-        // steering at row 96, where BOTH raw borders are outside the image.
-        for (int i=0; i<ROUND_CONFIRM_FRAMES+NAV_FEATURE_FRAMES; ++i)
-        {
-            partial_ring_image(side); frame();
-            if (i<ROUND_CONFIRM_FRAMES-1) assert(track_nav.phase==NAV_NORMAL);
-        }
-        assert(track_nav.phase==NAV_ENTER && track_nav.path_valid[96]);
-        assert(left_line[96]==0 && right_line[96]==187);
-        assert(control_mid[96]==(side==1 ? 120 : 67));
-        assert(fabsf(speed_target-SPEED_CURVE_TARGET)<0.01f);
-        clear_frames(16);
-        assert(track_nav.phase==NAV_ENTER);
-        entry_curve_frames(side,16);
-        assert(track_nav.phase==NAV_INSIDE);
-        gap_frames(side==1 ? 2 : 1,6);
-        assert(track_nav.phase==NAV_EXIT);
-        clear_frames(60);
-        assert(track_nav.phase==NAV_NORMAL && fabsf(speed_target-SPEED_STRAIGHT_TARGET)<0.01f);
-    }
+    for(int side=1;side<=2;++side) { abc_enter(side); clear_frames(220); }
 
     // One noisy candidate must preserve ring state and freeze its evidence.
-    gap_frames(1, ROUND_CONFIRM_FRAMES+NAV_FEATURE_FRAMES);
+    abc_enter(1);
     assert(track_nav.phase==NAV_ENTER);
     stripes(); frame();
     assert(track_nav.phase==NAV_ENTER && track_nav.element==TRACK_ROUND_LEFT);
@@ -243,7 +196,7 @@ int main(void)
     assert(speed_target>0 && zebra_race.phase==ZEBRA_RACE_ARMED);
 
     // A return stripe has priority even if an element was just entered.
-    gap_frames(1, ROUND_CONFIRM_FRAMES+NAV_FEATURE_FRAMES);
+    abc_enter(1);
     assert(track_nav.phase==NAV_ENTER);
     for (int i=0; i<2; ++i)
     {

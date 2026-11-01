@@ -4,7 +4,10 @@
 
 // ASCII telemetry at 10Hz. Speed unit: encoder counts / 10ms.
 #define WIRELESS_SPEED_PERIOD_MS 100u
-#define WIRELESS_SPEED_BYTES 288u
+#define WIRELESS_SPEED_BYTES 768u
+static char wireless_nav_extra[384];
+static void Wireless_Nav_Update(const char *text)
+{ snprintf(wireless_nav_extra,sizeof wireless_nav_extra,"%s",text); }
 static uint8 wireless_speed_packet[WIRELESS_SPEED_BYTES];
 static uint8 wireless_speed_ready;
 static volatile uint8 wireless_speed_active;
@@ -108,6 +111,12 @@ static void Wireless_Speed_Poll(void)
         (unsigned)wireless_mid_near,(unsigned)wireless_mid_far,
         (unsigned)(stale?0:wireless_entry_guide),(unsigned)wireless_brick_phase,
         (unsigned)wireless_brick_side,(unsigned long)wireless_brick_travel,(unsigned long)odom);
+    if(length>=2 && length<(int)sizeof wireless_speed_packet) {
+        int added=snprintf((char *)wireless_speed_packet+length-2,
+            sizeof wireless_speed_packet-(length-2),"%s\r\n",wireless_nav_extra);
+        if(added<0) return;
+        length=length-2+added;
+    }
     if (length <= 0 || (unsigned)length >= sizeof(wireless_speed_packet)) return;
     wireless_speed_length = (uint16)length;
     wireless_speed_last_ms = now;
