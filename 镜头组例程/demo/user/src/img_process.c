@@ -566,10 +566,6 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
         nav->exit_guide_valid=0;
         nav->slow_resume_phase=NAV_NORMAL;
     }
-    if (phase == NAV_ENTER || phase == NAV_INSIDE || phase == NAV_NORMAL)
-        nav->entry_apex_frames = 0;
-    if (phase == NAV_ENTER || phase == NAV_NORMAL)
-        nav->entry_transition_reason = 0;
     nav->stage_ms = now;
     nav->feature_frames = 0;
     nav->straight_frames = 0;
@@ -768,21 +764,16 @@ static int nav_entry_gap(const uint8_t *left, const uint8_t *right,
 // Restored straight boundaries alone do not prove the car turned into a ring.
 // Require a same-direction near/far bend supported by five real pairs per band.
 static int nav_entry_turn(const uint8_t *left, const uint8_t *right,
-                          int near, int far, int cols, int is_left,
-                          int *delta_out, uint8_t *support_out)
+                          int near, int far, int cols, int is_left)
 {
-    int delta=0, support=0;
+    int delta=0;
     for(int k=-2;k<=2;++k)
     {
-        int near_ok=nav_pair(left[near+k],right[near+k],cols);
-        int far_ok=nav_pair(left[far+k],right[far+k],cols);
-        support += near_ok + far_ok;
-        if(!near_ok || !far_ok) continue;
+        if(!nav_pair(left[near+k],right[near+k],cols) ||
+           !nav_pair(left[far+k],right[far+k],cols)) return 0;
         delta+=(int)left[near+k]+right[near+k]-left[far+k]-right[far+k];
     }
-    if (delta_out) *delta_out=delta;
-    if (support_out) *support_out=(uint8_t)support;
-    return support==10 && (is_left?delta:-delta)>=10*(cols/32);
+    return (is_left?delta:-delta)>=10*(cols/32);
 }
 
 // Seed missing row widths only from current real, consecutive boundary pairs.
@@ -915,18 +906,8 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     nav->guide_valid = 0;
     int feature = 0;
     if (nav->phase == NAV_APPROACH) feature = inner_open >= rows / 20;
-    int entry_delta=0;
-    uint8_t entry_support=0;
-    int entry_turn=nav->phase == NAV_ENTER ?
-        nav_entry_turn(raw_left,raw_right,near,far,cols,is_left,&entry_delta,&entry_support) : 0;
-    nav->entry_full=(uint8_t)full;
-    nav->entry_turn=(uint8_t)entry_turn;
-    nav->entry_pair_support=entry_support;
-    nav->entry_bend_delta=(int16_t)entry_delta;
-    nav->exit_outer_open=(uint8_t)outer_open;
-    nav->exit_both_open=(uint8_t)both_open;
-    nav->exit_straight=(uint8_t)straight;
-    if (nav->phase == NAV_ENTER) feature = full && inner_open == 0 && entry_turn;
+    if (nav->phase == NAV_ENTER) feature = full && inner_open == 0 &&
+        nav_entry_turn(raw_left,raw_right,near,far,cols,is_left);
     nav->exit_straight_fallback=(uint8_t)(
         ring_path_phase==NAV_INSIDE && full && straight &&
         inner_open==0 && outer_open==0 && both_open==0 &&
@@ -945,9 +926,6 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         else if (nav->exit_confirm_frames) --nav->exit_confirm_frames;
     }
     else nav->exit_confirm_frames = 0;
-    if (nav->phase == NAV_ENTER && nav->apex_valid)
-    { if (nav->entry_apex_frames < NAV_ENTRY_APEX_FRAMES) ++nav->entry_apex_frames; }
-    else if (nav->phase == NAV_ENTER) nav->entry_apex_frames=0;
     if (feature) { if (nav->feature_frames < NAV_FEATURE_FRAMES) ++nav->feature_frames; }
     else nav->feature_frames = 0;
     // 边线几何已连续、道路近远行一致时，UNKNOWN只是尚未分类，不应卡死退出恢复。
@@ -963,12 +941,8 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     if (nav->phase == NAV_APPROACH && nav->feature_frames >= NAV_FEATURE_FRAMES)
         nav_stage(nav, NAV_ENTER, now_ms);
     else if (nav->phase == NAV_ENTER && elapsed >= NAV_STAGE_MIN_MS &&
-             (nav->feature_frames >= NAV_FEATURE_FRAMES ||
-              nav->entry_apex_frames >= NAV_ENTRY_APEX_FRAMES))
-    {
-        nav->entry_transition_reason = nav->feature_frames >= NAV_FEATURE_FRAMES ? 1 : 2;
+             nav->feature_frames >= NAV_FEATURE_FRAMES)
         nav_stage(nav, NAV_INSIDE, now_ms);
-    }
     else if (nav->phase == NAV_INSIDE && elapsed >= NAV_INSIDE_MIN_MS &&
              nav->exit_confirm_frames >= NAV_RING_EXIT_CONFIRM_FRAMES)
     {
@@ -1036,7 +1010,6 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     nav->entry_gap_rows=0;
     nav->entry_edge_rows=0;
     nav->entry_guided_rows=0;
-    nav->entry_bias_active=0;
     nav->exit_reject_rows=0;
     uint32_t path_hold_ms=(ring_path_phase==NAV_INSIDE || ring_path_phase==NAV_EXIT) ?
                           NAV_INSIDE_HOLD_MS : NAV_HOLD_MS;
@@ -1102,23 +1075,6 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                 { center=candidate; width=corridor; usable=1;
                   ++nav->entry_edge_rows;
                   if(y==near) nav->entry_guide=2; }
-            }
-            // 缺少入口开口补线时，沿已确认的内岛尖施加有界向内弯曲，
-            // 避免等待原始边线先转弯才开始转的循环依赖。
-            if (ring_path_phase==NAV_ENTER && nav->apex_valid && !entry_open &&
-                !island_edge[y] && usable && y>=far)
-            {
-                int progress=nav_clip((y-far)*256/(near-far),0,256);
-                int shift=(width/NAV_ENTRY_SHIFT_DIV)*progress/256;
-                int target=center+(is_left?-shift:shift);
-                if (shift>0 && target-width/2>0 && target+width/2<cols-1 &&
-                    (!binary || binary[y*cols+target]!=0))
-                {
-                    center=target;
-                    nav->entry_bias_active=1;
-                    ++nav->entry_guided_rows;
-                    if(y==near) nav->entry_guide=3;
-                }
             }
             // A current black pixel cannot be accepted as a drivable center,
             // including while waiting for temporal cap confirmation.

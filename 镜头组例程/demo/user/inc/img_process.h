@@ -57,7 +57,6 @@ const char *track_element_name(track_element_t element);
 
 // 视觉状态机初始参数，需按实际环岛尺寸、帧率和相机安装标定。
 #define NAV_FEATURE_FRAMES       (3)
-#define NAV_ENTRY_APEX_FRAMES    (2) // 已确认环岛内岛尖连续可见时允许结束入口阶段
 #define NAV_EXIT_STRAIGHT_FRAMES (5)
 #define NAV_RING_EXIT_CONFIRM_FRAMES (8) // 环内出口证据需累计确认，单帧/短暂开口不切换
 #define NAV_RING_EXIT_STRAIGHT_FRAMES (12) // 环岛出口与恢复阶段保持稳定直线
@@ -121,9 +120,6 @@ typedef struct
     int16_t exit_guide_slope;
     uint8_t entry_guide; // 当前近控制行：0参考边回退，1开口引导，2真实岛边
     uint8_t entry_gap_valid, entry_gap_rows, entry_edge_rows, entry_guided_rows;
-    uint8_t entry_full, entry_turn, entry_pair_support, entry_apex_frames, entry_bias_active, entry_transition_reason;
-    uint8_t exit_outer_open, exit_both_open, exit_straight;
-    int16_t entry_bend_delta;
     uint8_t exit_reject_rows;
     uint8_t apex_valid, apex_x, apex_y, apex_hits, apex_prev_x, apex_prev_y;
     uint8_t width[256], learned[256], last_mid[256], path_valid[256];

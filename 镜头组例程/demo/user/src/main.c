@@ -269,8 +269,6 @@ static zebra_race_t zebra_race = {0};
 static track_detector_t track_detector = {0};
 static track_nav_t track_nav = {0};
 static uint8 appr_seen, enter_seen;
-static uint32 ring_start_distance;
-static uint8 ring_distance_active;
 static brick_t brick = {0};
 static uint32 last_navigation_frame_ms;
 static uint8 navigation_frame_initialized;
@@ -412,13 +410,8 @@ int main(void)
                             MT9V03X_H,MT9V03X_W,now);
                     else
                         abc_element_update(&track_detector,raw_kind);
-                    track_nav_phase_t phase_before_update=track_nav.phase;
                     track_nav_update(&track_nav, &track_detector, left_line, right_line, &image[0][0],
                         control_left, control_right, control_mid, MT9V03X_H, MT9V03X_W, now);
-                    if (phase_before_update==NAV_NORMAL && track_nav.phase!=NAV_NORMAL &&
-                        (track_nav.element==TRACK_ROUND_LEFT || track_nav.element==TRACK_ROUND_RIGHT))
-                    { ring_start_distance=speed_distance_counts; ring_distance_active=1; }
-                    if (track_nav.phase==NAV_NORMAL) ring_distance_active=0;
                 }
             }
             if(track_nav.phase==NAV_APPROACH) appr_seen=1;
@@ -477,22 +470,15 @@ int main(void)
                 uint8_t shape = track_road_shape(left_line, right_line, MT9V03X_H, MT9V03X_W);
                 if (shape) road_state = shape == 1 ? "STRAIGHT" : "CURVE";
             }
-            char nav_extra[512];
+            char nav_extra[384];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u rd=%lu en=%u/%u/%u/%u/%u/%d/%u ex=%u/%u/%u/%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d",
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d",
                 (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
                 (unsigned)track_nav.straight_frames,(unsigned)track_nav.exit_straight_fallback,
                 (unsigned long)(now-track_nav.stage_ms),(unsigned)track_nav.slow_resume_phase,
-                (unsigned long)(ring_distance_active ? speed_distance_counts-ring_start_distance : 0u),
-                (unsigned)track_nav.entry_full,(unsigned)track_nav.entry_pair_support,
-                (unsigned)track_nav.entry_turn,(unsigned)track_nav.entry_apex_frames,
-                (unsigned)track_nav.entry_bias_active,(int)track_nav.entry_bend_delta,
-                (unsigned)track_nav.entry_transition_reason,
-                (unsigned)track_nav.exit_outer_open,(unsigned)track_nav.exit_both_open,
-                (unsigned)track_nav.exit_straight,(unsigned)track_nav.exit_evidence,
                 (unsigned)vl->lost,(unsigned)vl->monotonic,
                 (unsigned)vl->a.valid,(unsigned)vl->a.x,(unsigned)vl->a.y,
                 (unsigned)vl->b.valid,(unsigned)vl->b.x,(unsigned)vl->b.y,
