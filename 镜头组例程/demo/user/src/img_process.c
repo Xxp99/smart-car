@@ -1100,6 +1100,28 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                   ++nav->entry_edge_rows;
                   if(y==near) nav->entry_guide=2; }
             }
+            // ENTER时若近端岛边/入口缺口没有跟到，沿真实道路中线做有界的同侧弯入引导。
+            // 偏移从远端逐渐增加到近控制行，且每个目标点必须仍落在白色赛道内。
+            if (ring_path_phase == NAV_ENTER && usable && !entry_open &&
+                !island_edge[y] && y >= far)
+            {
+                int span = near - far;
+                int max_shift = width / NAV_ENTRY_SHIFT_DIV;
+                int progress = y - far;
+                if (progress > span) progress = span;
+                int desired_shift = span > 0 ? max_shift * progress / span : 0;
+                for (int shift = desired_shift; shift > 0; --shift)
+                {
+                    int target = center + (is_left ? -shift : shift);
+                    if (target - width / 2 <= 0 || target + width / 2 >= cols - 1 ||
+                        (binary && binary[y * cols + target] == 0))
+                        continue;
+                    center = target;
+                    ++nav->entry_guided_rows;
+                    if (y == near) nav->entry_guide = 1;
+                    break;
+                }
+            }
             // A current black pixel cannot be accepted as a drivable center,
             // including while waiting for temporal cap confirmation.
             if (usable && binary &&
