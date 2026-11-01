@@ -469,7 +469,8 @@ int main(void)
                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
                 (track_nav.phase == NAV_EXIT ||
                  (track_nav.phase == NAV_SLOW && track_nav.slow_resume_phase == NAV_EXIT)) &&
-                (int32_t)(track_nav.exit_turn_until_ms - now) > 0)
+                (int32_t)(track_nav.exit_turn_until_ms - now) > 0 &&
+                track_nav.exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES)
             {
                 // 出环短时按环岛方向转向，再恢复出口视觉循迹。
                 tmp_duty = servo_motor_duty_middle +
