@@ -473,10 +473,11 @@ int main(void)
             char nav_extra[384];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u age=%lu Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d",
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d",
                 (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
+                (unsigned)track_nav.straight_frames,(unsigned)track_nav.exit_straight_fallback,
                 (unsigned long)(now-track_nav.stage_ms),
                 (unsigned)vl->lost,(unsigned)vl->monotonic,
                 (unsigned)vl->a.valid,(unsigned)vl->a.x,(unsigned)vl->a.y,

@@ -890,8 +890,16 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     if (nav->phase == NAV_APPROACH) feature = inner_open >= rows / 20;
     if (nav->phase == NAV_ENTER) feature = full && inner_open == 0 &&
         nav_entry_turn(raw_left,raw_right,near,far,cols,is_left);
+    nav->exit_straight_fallback=(uint8_t)(
+        nav->phase==NAV_INSIDE && full && straight &&
+        inner_open==0 && outer_open==0 && both_open==0 &&
+        now_ms-nav->stage_ms>=NAV_RING_STRAIGHT_EXIT_MIN_MS &&
+        nav->straight_frames>=NAV_RING_EXIT_STRAIGHT_FRAMES &&
+        detector->confirmed==TRACK_NONE &&
+        (detector->candidate==TRACK_NONE || detector->candidate==TRACK_UNKNOWN));
     int ring_exit_feature = nav->phase == NAV_INSIDE &&
-        outer_open >= rows / 20 && both_open == 0 && exit_evidence;
+        ((outer_open >= rows / 20 && both_open == 0 && exit_evidence) ||
+         nav->exit_straight_fallback);
     if (nav->phase == NAV_INSIDE)
     {
         // 证据短暂消失时只递减一帧，防抖；须累计8帧才接受出口。
@@ -975,6 +983,8 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     nav->entry_edge_rows=0;
     nav->entry_guided_rows=0;
     nav->exit_reject_rows=0;
+    uint32_t path_hold_ms=(nav->phase==NAV_INSIDE || nav->phase==NAV_EXIT) ?
+                          NAV_INSIDE_HOLD_MS : NAV_HOLD_MS;
     for (int y = rows / 4; y < rows; ++y)
     {
         int usable = nav_pair(left[y], right[y], cols);
@@ -1105,14 +1115,14 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             nav->last_mid[y] = mid[y];
         }
         else if (nav->phase != NAV_NORMAL && nav->learned[y] &&
-                 now_ms - nav->last_path_ms <= NAV_HOLD_MS)
+                 now_ms - nav->last_path_ms <= path_hold_ms)
             mid[y] = nav->last_mid[y];
     }
     if (nav->path_valid[near] && nav->path_valid[far]) nav->last_path_ms = now_ms;
     nav->drive_valid = (nav->path_valid[near] && nav->path_valid[far]) ||
-        (nav->phase != NAV_NORMAL && now_ms-nav->last_path_ms <= NAV_HOLD_MS);
+        (nav->phase != NAV_NORMAL && now_ms-nav->last_path_ms <= path_hold_ms);
     if (nav->phase != NAV_NORMAL && nav->phase != NAV_SLOW &&
-             now_ms - nav->last_path_ms > NAV_HOLD_MS)
+             now_ms - nav->last_path_ms > path_hold_ms)
     {
         nav->fault = NAV_FAULT_PATH;
         nav_stage(nav, NAV_SLOW, now_ms);

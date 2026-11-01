@@ -60,6 +60,7 @@ const char *track_element_name(track_element_t element);
 #define NAV_EXIT_STRAIGHT_FRAMES (5)
 #define NAV_RING_EXIT_CONFIRM_FRAMES (8) // 环内出口证据需累计确认，单帧/短暂开口不切换
 #define NAV_RING_EXIT_STRAIGHT_FRAMES (12) // 环岛出口与恢复阶段保持稳定直线
+#define NAV_RING_STRAIGHT_EXIT_MIN_MS (1200u) // 备用直线出口证据需在环内持续运行后才启用
 #define NAV_STAGE_MIN_MS         (150u)
 #define NAV_RING_EXIT_MIN_MS     (400u)
 #define NAV_INSIDE_MIN_MS        (500u)
@@ -114,7 +115,7 @@ typedef struct
     uint8_t feature_frames, straight_frames, exit_confirm_frames;
     uint8_t exit_anchor, guide_valid, drive_valid, entry_pending;
     uint8_t exit_guide_row, exit_guide_center, exit_guide_valid;
-    uint8_t exit_evidence;
+    uint8_t exit_evidence, exit_straight_fallback;
     int16_t exit_guide_slope;
     uint8_t entry_guide; // 当前近控制行：0参考边回退，1开口引导，2真实岛边
     uint8_t entry_gap_valid, entry_gap_rows, entry_edge_rows, entry_guided_rows;
