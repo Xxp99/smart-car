@@ -48,6 +48,9 @@ void Wireless_Image_Tx_IRQHandler(void);
 #ifndef SERVO_TEST_ENABLE
 #define SERVO_TEST_ENABLE (0)
 #endif
+#ifndef SERVO_TEST_SWEEP
+#define SERVO_TEST_SWEEP (0) // 需同时启用SERVO_TEST_ENABLE；电机停止，仅验证左右转向。
+#endif
 
 // 舵机参数设置
 #define SERVO_MOTOR_PWM (PWM4_MODULE2_CHA_C30) // 定义主板上舵机对应引脚
@@ -87,4 +90,9 @@ void Wireless_Speed_Tx_IRQHandler(void);
 #endif
 #if WIRELESS_SPEED_ENABLE && (WIRELESS_IMAGE_ENABLE || WIRELESS_TEST_ENABLE)
 #error Select only one wireless telemetry mode
+#endif
+
+// 临时关闭斑马线接管及返回停车，设1恢复。
+#ifndef ZEBRA_ENABLE
+#define ZEBRA_ENABLE (0)
 #endif

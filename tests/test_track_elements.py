@@ -15,12 +15,21 @@ HARNESS = r'''
 #include "pid.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 void display_tests(void);
 
 static uint8_t left[120], right[120], mid[120], image[120 * 188];
 static void road(void) {
     for (int y = 0; y < 120; ++y) { left[y] = 50; right[y] = 138; }
+}
+static void entry_curve(int side) {
+    for(int y=0;y<120;++y) {
+        int shift=(y-96)/2;
+        if(shift < -12) shift=-12;
+        if(side==2) shift=-shift;
+        left[y]=50+shift; right[y]=138+shift;
+    }
 }
 static void gap(int kind, int first, int last) {
     for (int y = first; y <= last; ++y) {
@@ -35,7 +44,7 @@ static track_nav_t nav;
 static track_detector_t detector;
 static uint8_t patched_left[120], patched_right[120], patched_mid[120];
 static void navigate(unsigned now) {
-    track_nav_update(&nav, &detector, left, right, patched_left, patched_right,
+    track_nav_update(&nav, &detector, left, right, NULL, patched_left, patched_right,
                      patched_mid, 120, 188, now);
     for (int y = 0; y < 120; ++y) {
         assert(patched_left[y] < 188 && patched_right[y] < 188 && patched_mid[y] < 188);
@@ -73,7 +82,7 @@ static void partial_ring_tests(void) {
             if (mirror) mirror_road();
             assert(classify()==expected);
         }
-        // Dropout in an anchor window: two actual anchor rows must still survive.
+        // One dropout leaves at least three real anchor rows in the window.
         partial_ring(94,97); right[78]=187;
         if (mirror) mirror_road();
         assert(classify()==expected);
@@ -103,7 +112,7 @@ static void partial_ring_tests(void) {
         partial_ring(93,98);
         for (int y=0; y<120; ++y) if (left[y]) left[y]=28;
         if (mirror) mirror_road();
-        assert(!is_ring(classify())); // Masked rows cannot inflate observed width past 120%.
+        assert(classify()==expected); // No opening-width ratio: two endpoints + supported outer edge.
         partial_ring(94,97);
         for (int y=70; y<80; ++y) left[y]=3+(79-y)*4;
         for (int y=101; y<111; ++y) left[y]=3+(y-101)*4;
@@ -122,7 +131,7 @@ static void partial_ring_tests(void) {
             if (frame<ROUND_CONFIRM_FRAMES-1) assert(nav.phase==NAV_NORMAL);
         }
         assert(nav.phase==NAV_ENTER && nav.path_valid[96]);
-        int expected_mid=178-88/2-88*NAV_ENTRY_BIAS_PERCENT/100;
+        int expected_mid=178-88/2-88/NAV_ENTRY_SHIFT_DIV;
         assert(patched_mid[96]==(mirror ? 187-expected_mid : expected_mid));
         assert(memcmp(saved_l,left,120)==0 && memcmp(saved_r,right,120)==0);
         navigate(700); assert(nav.phase==NAV_ENTER); // Current-frame support remains usable.
@@ -217,15 +226,22 @@ static void navigation_tests(void) {
         detector.candidate = detector.confirmed = side == 1 ? TRACK_ROUND_LEFT : TRACK_ROUND_RIGHT;
         navigate(100); assert(nav.phase == NAV_APPROACH);
         navigate(120); navigate(140); assert(nav.phase == NAV_ENTER);
-        assert(side == 1 ? patched_mid[96] < 94 : patched_mid[96] > 94);
+        assert(nav.entry_guide==1);
+        assert(side==1 ? patched_mid[96]<94 : patched_mid[96]>94);
+        assert(abs((int)patched_mid[96]-94)<=88/NAV_ENTRY_SHIFT_DIV);
         assert(nav.width[96] == 88); // Synthetic opening cannot overwrite learned road width.
         road(); detector.candidate = detector.confirmed = TRACK_NONE;
-        navigate(300); navigate(320); navigate(340); assert(nav.phase == NAV_INSIDE);
+        navigate(300); navigate(320); navigate(340); assert(nav.phase == NAV_ENTER);
+        entry_curve(side==1?2:1); // Opposite bend is not proof of entry.
+        navigate(360); navigate(380); navigate(400); assert(nav.phase == NAV_ENTER);
+        entry_curve(side);
+        navigate(420); navigate(440); navigate(460); assert(nav.phase == NAV_INSIDE);
+        road();
         gap(side == 1 ? 2 : 1, 80, 100);
         detector.candidate = TRACK_UNKNOWN;
-        navigate(400); navigate(420); navigate(440);
+        navigate(500); navigate(520); navigate(540);
         assert(nav.phase == NAV_INSIDE); // No exit before minimum in-ring time.
-        navigate(900); assert(nav.phase == NAV_EXIT);
+        navigate(1000); assert(nav.phase == NAV_EXIT);
         assert(patched_mid[96] == 94);
         road(); detector.candidate = TRACK_NONE;
         for (int t = 1100; t <= 1260; t += 40) navigate(t);
@@ -243,8 +259,8 @@ static void navigation_tests(void) {
     unsigned fallback_time = nav.stage_ms;
     navigate(100 + NAV_TIMEOUT_MS + 1000);
     assert(nav.phase == NAV_SLOW && nav.stage_ms == fallback_time); // No timeout reset loop.
-    // No width calibration at startup: special element falls back to low-speed tracking.
-    memset(&nav, 0, sizeof nav); navigate(0); assert(nav.phase == NAV_SLOW);
+    // Startup ring has real anchors: seed width and approach without historical calibration.
+    memset(&nav, 0, sizeof nav); navigate(0); assert(nav.phase == NAV_APPROACH && nav.drive_valid);
     // Unsigned elapsed time remains correct over the millisecond counter wrap.
     learn(); nav.phase = NAV_INSIDE; nav.element = TRACK_ROUND_LEFT;
     nav.started_ms = nav.stage_ms = 0xfffffff0u;
@@ -268,7 +284,168 @@ static void navigation_tests(void) {
     for (int i = 0; i < SPEED_IMAGE_TIMEOUT_MS / SPEED_SAMPLE_PERIOD_MS; ++i) Speed_Target_Tick();
     assert(speed_target == 0);
 }
+static void partial_sequence_tests(void) {
+    for(int side=1;side<=2;++side) {
+        track_element_t expected=side==1?TRACK_ROUND_LEFT:TRACK_ROUND_RIGHT;
+        learn();
+        // No simultaneous corners at any time. Static single-corner noise is insufficient.
+        road(); gap(side,0,98);
+        for(int f=0;f<10;++f) track_element_observe(&detector,left,right,120,188,100+20*f);
+        assert(detector.confirmed==TRACK_NONE);
+        for(int f=0;f<5;++f) {
+            road(); gap(side,0,100);
+            track_element_observe(&detector,left,right,120,188,300+20*f);
+            navigate(300+20*f);
+            if(f<4) assert(detector.confirmed==TRACK_NONE);
+        }
+        assert(detector.confirmed==expected);
+        navigate(400); navigate(420);
+        assert(nav.phase==NAV_ENTER && nav.entry_guide==1 && nav.drive_valid);
+        assert(side==1?patched_mid[96]<94:patched_mid[96]>94);
+        // Change CURRENT lower-corner x, retain detector history: guide must change now.
+        int previous=patched_mid[96];
+        for(int y=101;y<120;++y) { if(side==1) left[y]+=12; else right[y]-=12; }
+        navigate(440);
+        assert(patched_mid[96]!=previous);
+        // No lower corner now: never reuse the remembered lower-corner coordinates.
+        road(); gap(side,0,119); navigate(460); assert(nav.entry_guide==0);
+
+        memset(&detector,0,sizeof detector);
+        road(); gap(side,45,119); // Only upper corner visible first.
+        track_element_observe(&detector,left,right,120,188,100);
+        for(int f=0;f<5;++f) {
+            road(); gap(side,0,99); // Only lower corner visible subsequently.
+            track_element_observe(&detector,left,right,120,188,120+20*f);
+        }
+        assert(detector.confirmed==expected);
+        // A camera gap invalidates temporal evidence and restarts confirmation.
+        memset(&detector,0,sizeof detector);
+        road(); gap(side,0,95); track_element_observe(&detector,left,right,120,188,0);
+        road(); gap(side,0,100);
+        for(int f=0;f<8;++f) track_element_observe(&detector,left,right,120,188,400+20*f);
+        assert(detector.confirmed==TRACK_NONE);
+        // Opposite-direction evidence cannot complete the previous sequence.
+        road(); gap(side==1?2:1,0,102);
+        track_element_observe(&detector,left,right,120,188,580);
+        assert(!detector.sequence_progress && detector.confirmed==TRACK_NONE);
+        // Smooth clipping and curved/discontinuous reference boundaries reject.
+        memset(&detector,0,sizeof detector);
+        for(int f=0;f<8;++f) {
+            road(); gap(side,0,90+f);
+            if(side==1) {left[91+f]=5;right[60]=110;}
+            else {right[91+f]=182;left[60]=78;}
+            track_element_observe(&detector,left,right,120,188,20*f);
+        }
+        assert(detector.confirmed==TRACK_NONE);
+    }
+}
 int main(void) {
+    partial_sequence_tests();
+    // Ring at startup without previous TRACK_NONE frames: real endpoints seed width.
+    memset(&nav,0,sizeof nav); memset(&detector,0,sizeof detector);
+    road(); gap(1,80,100);
+    detector.confirmed=detector.candidate=TRACK_ROUND_LEFT;
+    navigate(100);
+    assert(nav.learned[96] && nav.width[96]==88 && nav.drive_valid && nav.phase==NAV_APPROACH);
+    nav.phase=NAV_SLOW; nav.last_path_ms=0;
+    navigate(400); assert(nav.phase==NAV_APPROACH && nav.drive_valid);
+    // No two-sided support: never invent width or resume driving.
+    memset(&nav,0,sizeof nav); road(); gap(3,0,119);
+    navigate(1000); assert(nav.phase==NAV_SLOW && !nav.learned[96] && !nav.drive_valid);
+    // A short cap is not extrapolated down to the control rows.
+    learn();
+    for(int y=0;y<120;++y) {
+        left[y]=24; right[y]=164; nav.width[y]=140; nav.learned[y]=1;
+    }
+    gap(1,80,100);
+    detector.confirmed=detector.candidate=TRACK_ROUND_LEFT;
+    memset(image,255,sizeof image);
+    for(int dy=0;dy<8;++dy)
+        for(int x=19-dy;x<=21+dy;++x) image[(40+dy)*188+x]=0;
+    for(int frame=0;frame<3;++frame)
+        track_nav_update(&nav,&detector,left,right,image,patched_left,patched_right,patched_mid,120,188,100+20*frame);
+    assert(nav.apex_valid && nav.apex_x==20);
+    assert(nav.path_valid[72] && patched_mid[72]==94);
+    assert(nav.path_valid[96] && nav.drive_valid && nav.phase==NAV_ENTER);
+    // Mirrored cap tips, temporal validation, raw-edge preservation and loss fallback.
+    for(int side=0;side<2;++side) {
+        learn(); gap(side?2:1,80,100);
+        detector.confirmed=detector.candidate=side?TRACK_ROUND_RIGHT:TRACK_ROUND_LEFT;
+        memset(image,255,sizeof image);
+        for(int dy=0;dy<66;++dy) {
+            int radius=1+(dy<24?dy:24);
+            for(int x=60-radius;x<=60+radius;++x)
+                image[(40+dy)*188+(side?187-x:x)]=0;
+        }
+        uint8_t original_left[120],original_right[120];
+        memcpy(original_left,left,120);memcpy(original_right,right,120);
+        for(int frame=0;frame<3;++frame) {
+            track_nav_update(&nav,&detector,left,right,image,patched_left,patched_right,patched_mid,120,188,100+20*frame);
+            assert(nav.apex_valid==(frame==2));
+            if(frame<2) assert(patched_mid[96]==94); // No unconfirmed cap steering.
+        }
+        assert(nav.apex_y==40 && nav.apex_x==(side?127:60));
+        // The former cap-to-center connector crossed the black island here.
+        // Every guided row must remain on the white road outside the island.
+        for(int y=40;y<106;++y) {
+            int radius=1+((y-40)<24?(y-40):24);
+            int boundary=side?187-(60+radius):60+radius;
+            assert(nav.path_valid[y] && image[y*188+patched_mid[y]]==255);
+            assert(side?patched_mid[y]<boundary:patched_mid[y]>boundary);
+            assert(side?patched_right[y]==boundary:patched_left[y]==boundary);
+        }
+        assert(side ? patched_mid[96]<94 : patched_mid[96]>94);
+        assert(patched_mid[110]==94); // Never extend a vanished island contour.
+        assert(memcmp(left,original_left,120)==0 && memcmp(right,original_right,120)==0);
+        memset(image+70*188,255,188); // Break connectivity above the control rows.
+        track_nav_update(&nav,&detector,left,right,image,patched_left,patched_right,patched_mid,120,188,160);
+        assert(nav.apex_valid && patched_mid[72]==94 && patched_mid[96]==94);
+        // A disconnected black patch must not be accepted as the fallback road.
+        memset(image+96*188+90,0,10);
+        track_nav_update(&nav,&detector,left,right,image,patched_left,patched_right,patched_mid,120,188,180);
+        assert(!nav.path_valid[96]);
+        memset(image+96*188+90,255,10); // Restore the road before testing cap time gaps.
+        track_nav_update(&nav,&detector,left,right,image,patched_left,patched_right,patched_mid,120,188,500);
+        assert(!nav.apex_valid); // A frame gap cannot complete the three-frame gate.
+        memset(image,255,sizeof image);
+        image[40*188+60]=0; // One pixel cannot be a cap.
+        track_nav_update(&nav,&detector,left,right,image,patched_left,patched_right,patched_mid,120,188,520);
+        assert(!nav.apex_valid && nav.entry_guide==1);
+        assert(side?patched_mid[96]>94:patched_mid[96]<94);
+    }
+    // Same normal lane width above/below a cross, nearly filling the image.
+    // Missing-edge sentinel separation / normal width is only 187/167 < 1.3.
+    for(int y=0;y<120;++y) {left[y]=10;right[y]=177;}
+    assert(classify()==TRACK_NONE);
+    gap(3,55,70); assert(classify()==TRACK_CROSS);
+    for(int y=0;y<120;++y) {left[y]=10;right[y]=177;}
+    gap(1,55,70); gap(2,58,73); assert(classify()==TRACK_CROSS);
+    // Removing the ratio must not admit tiny gaps or unbounded loss.
+    for(int y=0;y<120;++y) {left[y]=10;right[y]=177;}
+    gap(3,55,56); assert(classify()==TRACK_UNKNOWN);
+    gap(3,0,119); assert(classify()==TRACK_UNKNOWN);
+    road(); gap(1,55,70); gap(2,58,73); assert(classify()==TRACK_CROSS);
+    road(); for(int y=55;y<=70;++y) {left[y]=2;right[y]=185;}
+    left[53]=0; right[72]=187; assert(classify()==TRACK_CROSS);
+    road(); gap(1,55,57); assert(classify()==TRACK_UNKNOWN);
+    road(); gap(2,55,57); assert(classify()==TRACK_UNKNOWN);
+    for(int side=1;side<=2;++side) {
+        for(int length=1;length<8;++length) {
+            road(); gap(side,55,54+length); assert(!is_ring(classify()));
+        }
+        road(); gap(side,30,84); assert(!is_ring(classify())); // 55 > 45% height.
+        road(); gap(side,55,67);
+        gap(side,50,52); assert(!is_ring(classify())); // Only 2/5 upper anchors.
+        road(); for(int y=0;y<120;++y) {left[y]=14; right[y]=173;}
+        gap(side,55,67); assert(!is_ring(classify())); // Weak endpoint previously admitted.
+    }
+    road(); assert(track_road_shape(left,right,120,188)==1);
+    left[96]=0; right[72]=187;
+    assert(track_road_shape(left,right,120,188)==1);
+    road(); for(int y=0;y<120;++y) {left[y]+=20;right[y]+=20;}
+    left[96]=0; right[72]=187;
+    assert(track_road_shape(left,right,120,188)==2);
+    gap(3,0,119); assert(track_road_shape(left,right,120,188)==0);
     road(); assert(classify() == TRACK_NONE);
     // A smooth ordinary curve retains both borders.
     for (int y = 0; y < 120; ++y) { left[y] += y / 5; right[y] += y / 5; }
@@ -283,7 +460,7 @@ int main(void) {
         track_element_t expected = mirror ? TRACK_ROUND_RIGHT : TRACK_ROUND_LEFT;
         for (int scenario = 0; scenario < 6; ++scenario) {
             road();
-            if (scenario == 0) gap(1, 55, 58); // 4-row opening, previously minimum 6.
+            if (scenario == 0) gap(1, 55, 62); // New minimum: eight supported rows.
             if (scenario == 1) gap(1, 26, 40); // Upper anchors outside old ROI.
             if (scenario == 2) gap(1, 90, 110); // Lower anchors outside old ROI.
             if (scenario == 3) { // 28% widening, previously required 30%.

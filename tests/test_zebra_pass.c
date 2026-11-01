@@ -6,6 +6,63 @@
 #include "../镜头组例程/demo/user/inc/zebra_pass.h"
 static uint8_t img[120][188];
 
+static void geometry_tests(void)
+{
+    // Both orientations, complete bars, and mild perspective/tilt.
+    for(int orientation=0;orientation<2;++orientation) {
+        for(int tilt=0;tilt<2;++tilt) {
+            memset(img,255,sizeof img);
+            for(int p=0;p<30;++p) {
+                int at=5+tilt*p/5;
+                for(int k=0;k<5;++k) {
+                    int width=3+k/2;
+                    for(int q=at;q<at+width;++q)
+                        if(orientation) img[40+q][75+p]=0;
+                        else img[55+p][63+q]=0;
+                    at+=width+3+k/2;
+                }
+            }
+            assert(zebra_detect(&img[0][0],120,188));
+        }
+        // Many transitions but irregular widths and gaps.
+        memset(img,255,sizeof img);
+        for(int p=0;p<30;++p) {
+            int at=3;
+            for(int k=0;k<5;++k) {
+                int width=k%2?9:2;
+                for(int q=at;q<at+width;++q)
+                    if(orientation) img[40+q][75+p]=0;
+                    else img[55+p][63+q]=0;
+                at+=width+(k%2?2:7);
+            }
+        }
+        assert(!zebra_detect(&img[0][0],120,188));
+    }
+    // Checkerboard: old jump counter passed; bars are not long and aligned.
+    for(int cell=2;cell<=8;++cell) {
+        memset(img,255,sizeof img);
+        for(int y=40;y<108;++y) for(int x=62;x<126;++x)
+            img[y][x]=((x/cell+y/cell)%2)?255:0;
+        assert(!zebra_detect(&img[0][0],120,188));
+    }
+    // Repeated patches only three rows high are not long stripes.
+    memset(img,255,sizeof img);
+    for(int y=70;y<73;++y) for(int x=40;x<148;++x) img[y][x]=(x/6)%2?255:0;
+    assert(!zebra_detect(&img[0][0],120,188));
+    // Side background must not satisfy the center ROI.
+    memset(img,255,sizeof img);
+    for(int y=40;y<108;++y) for(int x=1;x<55;++x) img[y][x]=(x/6)%2?255:0;
+    assert(!zebra_detect(&img[0][0],120,188));
+    // Road anchors exclude a stripe patch on the wrong side of a shifted lane.
+    uint8_t left[120],right[120];
+    memset(left,95,sizeof left);memset(right,180,sizeof right);
+    memset(img,255,sizeof img);
+    for(int y=40;y<108;++y) for(int x=65;x<96;++x) img[y][x]=(y/5)%2?255:0;
+    assert(zebra_detect(&img[0][0],120,188));
+    assert(!zebra_detect_lane(&img[0][0],120,188,left,right));
+    assert(!zebra_detect(0,120,188));
+}
+
 static void race_frame(zebra_race_t *race, zebra_pass_t *pass, int candidate, uint32_t now)
 {
     zebra_update(pass, (uint8_t)candidate, !candidate, 94, 94, now);
@@ -140,6 +197,7 @@ static void finish_clearance_tests(void)
 int main(void)
 {
     race_tests();
+    geometry_tests();
     finish_clearance_tests();
     memset(img, 255, sizeof(img));
     assert(!zebra_detect(&img[0][0], 120, 188));

@@ -1,0 +1,21 @@
+# Keil generated outputs and local debug/session settings
+镜头组例程/demo/mdk/Objects/
+镜头组例程/demo/mdk/Listings/
+*.uvguix.*
+镜头组例程/demo/mdk/JLinkSettings.ini
+
+# IAR generated outputs; retain .ewp/.eww/.ewd project files
+镜头组例程/demo/iar/program/settings/
+镜头组例程/demo/iar/program/Debug/
+镜头组例程/demo/iar/program/Release/
+*.dep
+
+# Local editor state, test caches and build logs
+.vscode/
+__pycache__/
+*.pyc
+*.log
+
+# Local discussion notes and reference screenshots are not source deliverables
+/交接文档_2026-10-26.md
+/doc_review/
