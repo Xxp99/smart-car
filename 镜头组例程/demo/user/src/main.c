@@ -317,7 +317,14 @@ int main(void)
             memcpy(control_right, right_line, sizeof(control_right));
             memcpy(control_mid, mid_line, sizeof(control_mid));
 #if ZEBRA_ENABLE
-            uint8_t zebra_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
+            uint8_t zebra_raw_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
+            if (zebra_raw_candidate || zebra.phase != ZEBRA_NORMAL ||
+                zebra_race.phase == ZEBRA_RACE_PASS || zebra_race.phase == ZEBRA_RACE_CLEAR)
+                zebra_lane_build(&zebra_lane, &image[0][0], track_nav.width,
+                    track_nav.learned, control_mid, track_nav.path_valid,
+                    MT9V03X_H, MT9V03X_W, control_time_ms);
+            else zebra_lane.current = 0;
+            uint8_t zebra_candidate = zebra_raw_candidate && zebra_lane.current;
             for (unsigned y = 0; y < MT9V03X_H; ++y)
             {
                 unsigned black = 0;
@@ -328,7 +335,7 @@ int main(void)
             }
 
 #else
-            uint8_t zebra_candidate = 0;
+            uint8_t zebra_raw_candidate = 0, zebra_candidate = 0;
 #endif
             // 转向仍看4/5行；额外用3/5行的中线趋势提前安排减速。
             uint8_t near_row = MT9V03X_H * 4 / 5;
@@ -350,7 +357,7 @@ int main(void)
             zebra_race_update(&zebra_race, &zebra, zebra_candidate, now, speed_distance_counts);
             uint8_t stopped = zebra_race.phase == ZEBRA_RACE_STOP;
             if (stopped) Speed_Stop_Latch(); // 下一次10ms中断清零两轮PWM及PI积分。
-            // 候选只减速；连续3帧确认后才固定90，不再跟随条纹产生的假边线。
+            // 连续3帧且车道重建有效后才确认；通过时按重建中线循迹。
             uint8_t finishing = zebra_race.phase == ZEBRA_RACE_PASS ||
                                 zebra_race.phase == ZEBRA_RACE_CLEAR;
             uint8_t passing = zebra_slow(&zebra, zebra_candidate) || finishing;
@@ -436,14 +443,7 @@ int main(void)
                 track_nav_request_ring_exit(&track_nav, MT9V03X_H, MT9V03X_W, now);
                 ring_edge_turn_frames = 0;
             }
-            if (passing && !stopped)
-            {
-                // 条纹会干扰逐行找边；用外侧暗背景重建赛道边界和中线。
-                zebra_lane_build(&zebra_lane, &image[0][0], track_nav.width,
-                    track_nav.learned, control_mid, track_nav.path_valid,
-                    MT9V03X_H, MT9V03X_W, now);
-                track_nav.drive_valid = zebra_lane.current;
-            }
+            if (passing && !stopped) track_nav.drive_valid = zebra_lane.current;
             if(track_nav.phase==NAV_APPROACH) appr_seen=1;
             if(track_nav.phase==NAV_ENTER) enter_seen=1;
             float mid_err = (MT9V03X_W / 2) - control_mid[near_row];
@@ -514,7 +514,7 @@ int main(void)
             char nav_extra[448];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
                 (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
@@ -539,7 +539,7 @@ int main(void)
                 (unsigned)control_mid[near_row],(unsigned)control_mid[far_row],
                 (int)(mid_err*10.0f),(int)(tmp_duty*10.0f),
                 (unsigned)track_nav.ring_edge_turn_hint,(unsigned)track_nav.exit_path_frames,
-                (unsigned)zebra_candidate,(unsigned)zebra.phase,
+                (unsigned)zebra_raw_candidate,(unsigned)zebra_candidate,(unsigned)zebra.phase,
                 (unsigned)zebra.hits,(unsigned)zebra.clear,
                 (unsigned)zebra_lane.current,
                 (unsigned)control_mid[near_row],(unsigned)control_mid[far_row],

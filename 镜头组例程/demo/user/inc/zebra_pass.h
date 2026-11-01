@@ -247,7 +247,7 @@ static void zebra_update(zebra_pass_t *s, uint8_t candidate, uint8_t path_valid,
         }
     }
     else if ((uint32_t)(now - s->phase_ms) >= ZEBRA_RECOVER_MS &&
-             s->clear >= ZEBRA_CLEAR_FRAMES && s->steering_ready)
+             s->clear >= ZEBRA_CLEAR_FRAMES)
     {
         s->phase = ZEBRA_NORMAL;
         s->hits = 0;

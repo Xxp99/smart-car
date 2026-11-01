@@ -17,6 +17,7 @@
 typedef struct {
     uint8_t current;
     uint8_t prior_valid[ZEBRA_LANE_ROWS_MAX],prior_mid[ZEBRA_LANE_ROWS_MAX];
+    uint8_t prior_width_valid[ZEBRA_LANE_ROWS_MAX],prior_width[ZEBRA_LANE_ROWS_MAX];
     uint8_t prior_ready,steering_ready,active,recovering;
     uint32_t prior_ms,steering_ms,last_good_ms;
     float angle;
@@ -120,28 +121,38 @@ static void zebra_lane_build(zebra_lane_t *s,const uint8_t *image,
     int first=(int)h/4;
     int prior=s->prior_ready && (uint32_t)(now-s->prior_ms)<=ZEBRA_LANE_PRIOR_MS;
     for(int y=first;y<(int)h;++y) {
-        if(!learned[y] || width[y]<(int)w/10 || width[y]>(int)w*9/10) continue;
+        int calibrated=learned[y] && width[y]>=(int)w/10 && width[y]<=(int)w*9/10;
+        int expected_width=calibrated?width[y]:
+            (prior && s->prior_width_valid[y]?s->prior_width[y]:(int)w*3/4);
         int center=prior && s->prior_valid[y]?s->prior_mid[y]:(int)w/2;
         const uint8_t *row=image+(unsigned)y*w;
-        raw_l[y]=(int16_t)zebra_lane_outer(row,w,0,center-width[y]/2);
-        raw_r[y]=(int16_t)zebra_lane_outer(row,w,1,center+width[y]/2);
+        raw_l[y]=(int16_t)zebra_lane_outer(row,w,0,center-expected_width/2);
+        raw_r[y]=(int16_t)zebra_lane_outer(row,w,1,center+expected_width/2);
     }
     zebra_lane_support(raw_l,supported_l,(int)h,first);
     zebra_lane_support(raw_r,supported_r,(int)h,first);
     for(int y=first;y<(int)h;++y) {
-        if(!learned[y] || width[y]<(int)w/10 || width[y]>(int)w*9/10) continue;
+        int calibrated=learned[y] && width[y]>=(int)w/10 && width[y]<=(int)w*9/10;
+        int lane_width=calibrated?width[y]:
+            (prior && s->prior_width_valid[y]?s->prior_width[y]:0);
         float l=0.0f,r=0.0f,center;
         int left=zebra_lane_project(raw_l,supported_l,y,(int)h,first,&l);
         int right=zebra_lane_project(raw_r,supported_r,y,(int)h,first,&r);
         if(left && right) {
             float span=r-l;
-            if(span<(float)width[y]*0.75f || span>(float)width[y]*1.25f) continue;
+            if(lane_width && (span<(float)lane_width*0.75f || span>(float)lane_width*1.25f)) continue;
+            if(!lane_width && (span<(float)w*0.25f || span>(float)w*0.9f)) continue;
+            lane_width=(int)(span+0.5f);
             center=(l+r)*0.5f;
-        } else if(left) center=l+(float)width[y]*0.5f;
-        else if(right) center=r-(float)width[y]*0.5f;
+        } else if(left && lane_width) center=l+(float)lane_width*0.5f;
+        else if(right && lane_width) center=r-(float)lane_width*0.5f;
         else continue;
         if(center<1.0f || center>(float)w-2.0f) continue;
         mid[y]=(uint8_t)(center+0.5f);valid[y]=1;
+        if(lane_width>=(int)w/10 && lane_width<=(int)w*9/10) {
+            s->prior_width[y]=(uint8_t)lane_width;
+            s->prior_width_valid[y]=1;
+        }
     }
     s->current=(uint8_t)(valid[h*4/5] && valid[h*3/5]);
     if(s->current) {
