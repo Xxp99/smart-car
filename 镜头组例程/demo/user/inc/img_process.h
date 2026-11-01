@@ -108,6 +108,7 @@ typedef struct
 typedef struct
 {
     track_nav_phase_t phase;
+    track_nav_phase_t slow_resume_phase; // 环岛丢线进入SLOW前的导航阶段，用于恢复同一侧循迹
     track_nav_fault_t fault;
     ring_vision_t vision;
     track_element_t element;
