@@ -5,7 +5,7 @@
 // ASCII telemetry at 10Hz. Speed unit: encoder counts / 10ms.
 #define WIRELESS_SPEED_PERIOD_MS 100u
 #define WIRELESS_SPEED_BYTES 768u
-static char wireless_nav_extra[384];
+static char wireless_nav_extra[512];
 static void Wireless_Nav_Update(const char *text)
 { snprintf(wireless_nav_extra,sizeof wireless_nav_extra,"%s",text); }
 static uint8 wireless_speed_packet[WIRELESS_SPEED_BYTES];
