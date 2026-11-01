@@ -135,4 +135,4 @@ track_element_t track_visual_classify(ring_vision_t *vision, const uint8_t *im,
     // 只复用十字判据；旧的开口序列识别不参与生产环岛判断。
     track_element_t old = track_cross_classify(left, right, rows, cols);
     return old == TRACK_CROSS || old == TRACK_NONE ? old : TRACK_UNKNOWN;
-}\n
+}
