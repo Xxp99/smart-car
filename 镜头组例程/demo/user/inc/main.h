@@ -89,7 +89,6 @@ void Wireless_Speed_Tx_IRQHandler(void);
 #error Select only one wireless telemetry mode
 #endif
 
-// 临时关闭斑马线接管及返回停车，设1恢复。
 #ifndef ZEBRA_ENABLE
-#define ZEBRA_ENABLE (0)
+#define ZEBRA_ENABLE (1)
 #endif

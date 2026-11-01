@@ -2,6 +2,7 @@
 #include "fsl_clock.h"
 #include <stdio.h>
 #include "zebra_pass.h"
+#include "zebra_lane.h"
 #include "brick_avoid.h"
 #if WIRELESS_SPEED_ENABLE
 #include "wireless_speed.h"
@@ -266,11 +267,14 @@ uint8_t mid_line[MT9V03X_H];
 uint8_t right_line[MT9V03X_H];
 static zebra_pass_t zebra = {0};
 static zebra_race_t zebra_race = {0};
+static zebra_lane_t zebra_lane = {0};
+static float last_servo_angle = ZEBRA_STRAIGHT_ANGLE;
 static track_detector_t track_detector = {0};
 static track_nav_t track_nav = {0};
 static uint8_t ring_edge_turn_frames;
 static uint8 appr_seen, enter_seen;
 static brick_t brick = {0};
+static brick_steering_t brick_servo = {0};
 static uint32 last_navigation_frame_ms;
 static uint8 navigation_frame_initialized;
 static uint8_t stripe_row[MT9V03X_H];
@@ -301,6 +305,13 @@ int main(void)
 #if WIRELESS_IMAGE_ENABLE
             Wireless_Image_Begin((const uint8 *)image);
 #endif
+            uint8_t ring_active =
+                ((track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
+                 track_nav.phase != NAV_NORMAL) ||
+                track_detector.candidate == TRACK_ROUND_LEFT ||
+                track_detector.candidate == TRACK_ROUND_RIGHT ||
+                track_detector.confirmed == TRACK_ROUND_LEFT ||
+                track_detector.confirmed == TRACK_ROUND_RIGHT;
             // 获取直方图
             get_hist_gram((uint8_t *)image, MT9V03X_H, MT9V03X_W, hist_gram);
             unsigned char threshold = get_threshold_otsu(hist_gram);
@@ -313,7 +324,8 @@ int main(void)
             memcpy(control_right, right_line, sizeof(control_right));
             memcpy(control_mid, mid_line, sizeof(control_mid));
 #if ZEBRA_ENABLE
-            uint8_t zebra_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
+            uint8_t zebra_candidate = ring_active ? 0 :
+                zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
             for (unsigned y = 0; y < MT9V03X_H; ++y)
             {
                 unsigned black = 0;
@@ -349,14 +361,15 @@ int main(void)
             // 候选只减速；连续3帧确认后才固定90，不再跟随条纹产生的假边线。
             uint8_t finishing = zebra_race.phase == ZEBRA_RACE_PASS ||
                                 zebra_race.phase == ZEBRA_RACE_CLEAR;
-            uint8_t passing = zebra_slow(&zebra, zebra_candidate) || finishing;
+            uint8_t passing = !ring_active &&
+                (zebra_slow(&zebra, zebra_candidate) || finishing);
 #else
             uint8_t path_recovered = 0, stopped = 0, finishing = 0, passing = 0;
 #endif
             track_nav.apex_valid = 0; // No current apex until this frame runs navigation.
             track_nav.entry_guide = 0;
             memset(&track_nav.vision,0,sizeof track_nav.vision);
-            if (zebra.phase != ZEBRA_NORMAL || finishing || stopped)
+            if (!ring_active && (zebra.phase != ZEBRA_NORMAL || finishing || stopped))
             {
                 memset(&brick,0,sizeof brick);
                 // 斑马线确认后才接管；候选仅减速，不销毁现有导航阶段。
@@ -371,7 +384,7 @@ int main(void)
                 track_nav.last_path_ms = now - NAV_HOLD_MS - 1u;
                 memset(track_nav.path_valid, 0, sizeof(track_nav.path_valid));
             }
-            else if (zebra_candidate)
+            else if (!ring_active && zebra_candidate)
             {
                 memset(&brick,0,sizeof brick);
                 track_nav.apex_hits = 0;
@@ -432,19 +445,23 @@ int main(void)
                 track_nav_request_ring_exit(&track_nav, MT9V03X_H, MT9V03X_W, now);
                 ring_edge_turn_frames = 0;
             }
+            if (passing && !stopped && !ring_active)
+            {
+                // 条纹会干扰逐行找边；用外侧暗背景重建赛道边界和中线。
+                zebra_lane_build(&zebra_lane, &image[0][0], track_nav.width,
+                    track_nav.learned, control_mid, track_nav.path_valid,
+                    MT9V03X_H, MT9V03X_W, now);
+                track_nav.drive_valid = zebra_lane.current;
+            }
             if(track_nav.phase==NAV_APPROACH) appr_seen=1;
             if(track_nav.phase==NAV_ENTER) enter_seen=1;
             float mid_err = (MT9V03X_W / 2) - control_mid[near_row];
             float line_change = (float)control_mid[far_row] - control_mid[near_row];
-            uint8_t speed_line_valid = passing ? path_recovered :
-                (track_nav.path_valid[near_row] && track_nav.path_valid[far_row]);
-            if (zebra.phase == ZEBRA_STRAIGHT)
-            {
-                mid_err = 0.0f;
-                line_change = 0.0f;
-                speed_line_valid = 1; // 固定直行阶段直接申请斑马线通过速度，不依赖条纹中的边线。
-                memset(control_mid, MT9V03X_W / 2, sizeof(control_mid));
-            }
+            uint8_t speed_line_valid = passing && zebra_lane.current ? 1 :
+                (passing ? path_recovered :
+                (track_nav.path_valid[near_row] && track_nav.path_valid[far_row]));
+            if (passing && zebra_lane.current)
+                mid_err -= 0.25f * line_change;
             // 环岛候选先减速，最近5帧同侧命中3次确认；接管及恢复继续限速。
             uint8_t round_pending = track_detector.candidate == TRACK_ROUND_LEFT ||
                                     track_detector.candidate == TRACK_ROUND_RIGHT;
@@ -463,7 +480,9 @@ int main(void)
             tmp_duty = MIN(tmp_duty,MAX(SERVO_MOTOR_L_MAX,SERVO_MOTOR_R_MAX));
             // 退出时过滤不稳定边线，并对连续输出限速；转向接稳后才恢复直道加速。
 #if ZEBRA_ENABLE
-            tmp_duty = zebra_steering(&zebra, tmp_duty, now);
+            tmp_duty = zebra_lane_steering(&zebra_lane, tmp_duty,
+                zebra_lane.current, passing && !stopped && !ring_active,
+                now, last_servo_angle, servo_motor_duty_middle);
 #endif
             if (!stopped &&
                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
@@ -479,6 +498,9 @@ int main(void)
                 tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
             }
             if (stopped) tmp_duty = ZEBRA_STRAIGHT_ANGLE;
+            tmp_duty = brick_steering(&brick_servo, tmp_duty, brick_owns(&brick),
+                brick.valid, now, servo_motor_duty_middle);
+            last_servo_angle = tmp_duty;
             pwm_set_duty(SERVO_MOTOR_PWM, SERVO_MOTOR_DUTY(tmp_duty));
 
 #if WIRELESS_SPEED_ENABLE

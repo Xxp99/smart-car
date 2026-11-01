@@ -46,6 +46,8 @@ static unsigned zebra_transitions(const uint8_t *p, unsigned count, unsigned ste
 // Initial pixel limits for 188x120; camera images are still needed for calibration.
 #define ZEBRA_BAR_COUNT 4
 #define ZEBRA_PROBE_COUNT 21
+#define ZEBRA_PROBE_MIN_GOOD 15
+#define ZEBRA_PROBE_MAX_BAD_RUN 2
 static int zebra_bars(const uint8_t *p, unsigned n, unsigned step,
                       int start, int *lo, int *hi)
 {
@@ -83,27 +85,42 @@ static int zebra_regular(const int *lo,const int *hi,int span)
 static int zebra_patch(const uint8_t *base,unsigned length,unsigned step,unsigned probe_step)
 {
     int lo[4],hi[4],prev_lo[4],prev_hi[4];
-    // Search complete groups; a single bad early run need not hide a later zebra.
-    for(int begin=1;begin<(int)length-14;) {
-        if(!zebra_bars(base,length,step,begin,lo,hi)) return 0;
-        begin=hi[0]+1;
-        if(!zebra_regular(lo,hi,20)) continue;
-        for(int k=0;k<4;++k) {prev_lo[k]=lo[k];prev_hi[k]=hi[k];}
-        int ok=1;
-        for(int line=1;line<ZEBRA_PROBE_COUNT && ok;++line) {
-            const uint8_t *p=base+line*probe_step;
-            int from=prev_lo[0]>2?prev_lo[0]-2:1;
-            if(!zebra_bars(p,length,step,from,lo,hi) || !zebra_regular(lo,hi,20)) {ok=0;break;}
-            int shift=lo[0]-prev_lo[0];
-            if(shift < -2 || shift > 2) {ok=0;break;}
-            for(int k=0;k<4;++k) {
-                int d=lo[k]-prev_lo[k]-shift, e=hi[k]-prev_hi[k]-shift;
-                if(d < -1 || d > 1 || e < -1 || e > 1 ||
-                   lo[k]>=prev_hi[k] || hi[k]<=prev_lo[k]) ok=0;
-                prev_lo[k]=lo[k];prev_hi[k]=hi[k];
+    // 允许21个相邻探测位置中少量污损，但只跟踪同一组条纹，避免噪点凑数。
+    for(int seed=0;seed<=ZEBRA_PROBE_MAX_BAD_RUN;++seed) {
+        const uint8_t *first=base+seed*probe_step;
+        for(int begin=1;begin<(int)length-14;) {
+            if(!zebra_bars(first,length,step,begin,lo,hi)) break;
+            begin=hi[0]+1;
+            if(!zebra_regular(lo,hi,20)) continue;
+            for(int k=0;k<4;++k) {prev_lo[k]=lo[k];prev_hi[k]=hi[k];}
+            int good=0,bad=seed,bad_run=0,last_good=seed,line;
+            for(line=seed;line<ZEBRA_PROBE_COUNT;++line) {
+                const uint8_t *p=base+line*probe_step;
+                int gap=line-last_good;
+                int from=prev_lo[0]-2*gap;
+                if(from<1) from=1;
+                int ok=zebra_bars(p,length,step,from,lo,hi) && zebra_regular(lo,hi,20);
+                if(ok && line>last_good) {
+                    int shift=lo[0]-prev_lo[0],period=prev_lo[1]-prev_lo[0];
+                    if(shift < -2*gap || shift > 2*gap ||
+                       shift*2<=-period || shift*2>=period) ok=0;
+                    for(int k=0;k<4 && ok;++k) {
+                        int d=lo[k]-prev_lo[k]-shift,e=hi[k]-prev_hi[k]-shift;
+                        if(d < -gap || d > gap || e < -gap || e > gap ||
+                           lo[k]>=prev_hi[k] || hi[k]<=prev_lo[k]) ok=0;
+                    }
+                }
+                if(ok) {
+                    ++good;bad_run=0;last_good=line;
+                    for(int k=0;k<4;++k) {prev_lo[k]=lo[k];prev_hi[k]=hi[k];}
+                } else {
+                    ++bad;++bad_run;
+                    if(bad>ZEBRA_PROBE_COUNT-ZEBRA_PROBE_MIN_GOOD ||
+                       bad_run>ZEBRA_PROBE_MAX_BAD_RUN) break;
+                }
             }
+            if(line==ZEBRA_PROBE_COUNT && good>=ZEBRA_PROBE_MIN_GOOD) return 1;
         }
-        if(ok) return 1;
     }
     return 0;
 }
@@ -111,7 +128,7 @@ static uint8_t zebra_detect_lane(const uint8_t *image,unsigned h,unsigned w,
                                   const uint8_t *left,const uint8_t *right)
 {
     if(!image || h<60 || w<80) return 0;
-    unsigned x0=w/3,x1=w*2/3; // Conservative center fallback, not the whole image.
+    unsigned x0=w/4,x1=w*3/4; // 中央车道ROI，兼容车辆横向偏移。
     if(left && right) {
         unsigned l=0,r=0,count=0,minwidth=w,maxwidth=0;
         for(unsigned y=h-5;y<h;++y) {
@@ -124,9 +141,8 @@ static uint8_t zebra_detect_lane(const uint8_t *image,unsigned h,unsigned w,
         if(count>=3 && maxwidth-minwidth<=w/16) {
             l/=count;r/=count;
             x0=l+(r-l)/8;x1=r-(r-l)/8;
-            // Without a perspective model, also keep the conservative center ROI.
-            if(x0<w/3) x0=w/3;
-            if(x1>w*2/3) x1=w*2/3;
+            if(x0<w/4) x0=w/4;
+            if(x1>w*3/4) x1=w*3/4;
         }
     }
     if(x1<=x0+20) return 0;
