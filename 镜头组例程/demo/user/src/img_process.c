@@ -1100,13 +1100,13 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                   ++nav->entry_edge_rows;
                   if(y==near) nav->entry_guide=2; }
             }
-            // ENTER时即使检测到岛边，也继续沿环岛方向弯入；否则岛边轮廓分支
-            // 会把中心线拉回外侧，导致转向减弱。偏移按学习到的车道宽度限幅。
+            // ENTER时若近端岛边/入口缺口没有跟到，沿真实道路中线做有界的同侧弯入引导。
+            // 偏移从远端逐渐增加到近控制行，且每个目标点必须仍落在白色赛道内。
             if (ring_path_phase == NAV_ENTER && usable && !entry_open &&
-                y >= far)
+                !island_edge[y] && y >= far)
             {
                 int span = near - far;
-                int max_shift = nav->width[y] / NAV_ENTRY_SHIFT_DIV;
+                int max_shift = width / NAV_ENTRY_SHIFT_DIV;
                 int progress = y - far;
                 if (progress > span) progress = span;
                 int desired_shift = span > 0 ? max_shift * progress / span : 0;
