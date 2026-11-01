@@ -580,6 +580,21 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
         nav->exit_confirm_frames = 0;
 }
 
+// 路径补线连续贴到画面边缘时，按已锁定的环岛方向启动出口转向阶段。
+void track_nav_request_ring_exit(track_nav_t *nav, uint8_t rows, uint8_t cols, uint32_t now_ms)
+{
+    if (!nav || rows == 0 || cols == 0 ||
+        (nav->element != TRACK_ROUND_LEFT && nav->element != TRACK_ROUND_RIGHT) ||
+        !(nav->phase == NAV_INSIDE ||
+          (nav->phase == NAV_SLOW && nav->slow_resume_phase == NAV_INSIDE)))
+        return;
+
+    nav->exit_anchor = nav->last_mid[rows * 4 / 5];
+    if (nav->exit_anchor == 0 || nav->exit_anchor >= cols - 1)
+        nav->exit_anchor = cols / 2;
+    nav_stage(nav, NAV_EXIT, now_ms);
+}
+
 // 十字：只连接上下真实边线之间的缺口，不把整片丢线当成可用路径。
 static void nav_bridge(uint8_t *edge, int rows, int cols, int is_left)
 {
@@ -814,6 +829,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                       uint8_t *left, uint8_t *right, uint8_t *mid,
                       uint8_t rows, uint8_t cols, uint32_t now_ms)
 {
+    nav->ring_edge_turn_hint = 0;
     // 环岛也走本导航器：入口缺口、黑色岛边和出口道路共用一套阶段/补线逻辑。
     // 视觉 A/B/C 点只保留作调试显示，不能再接管控制路径。
 
@@ -1091,9 +1107,23 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                 (center<=0 || center>=cols-1 || binary[y*cols+center]==0)) usable=0;
             if (usable)
             {
-                left[y] = (uint8_t)nav_clip(center - width / 2, 1, cols - 2);
-                right[y] = (uint8_t)nav_clip(center + width / 2, 1, cols - 2);
-                usable = nav_pair(left[y], right[y], cols);
+                int candidate_left = center - width / 2;
+                int candidate_right = center + width / 2;
+                if (ring_path_phase == NAV_INSIDE && (y == near || y == far) &&
+                    ((is_left && center >= cols * 4 / 5) ||
+                     (!is_left && center <= cols / 5)))
+                    nav->ring_edge_turn_hint = 1;
+                if (ring_path_phase == NAV_INSIDE &&
+                    (candidate_left <= 0 || candidate_right >= cols - 1 ||
+                     center <= 0 || center >= cols - 1 ||
+                     (binary && binary[y * cols + center] == 0)))
+                    usable = 0;
+                if (usable)
+                {
+                    left[y] = (uint8_t)nav_clip(candidate_left, 1, cols - 2);
+                    right[y] = (uint8_t)nav_clip(candidate_right, 1, cols - 2);
+                    usable = nav_pair(left[y], right[y], cols);
+                }
             }
         }
         if (nav->phase == NAV_EXIT ||

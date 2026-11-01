@@ -268,6 +268,7 @@ static zebra_pass_t zebra = {0};
 static zebra_race_t zebra_race = {0};
 static track_detector_t track_detector = {0};
 static track_nav_t track_nav = {0};
+static uint8_t ring_edge_turn_frames;
 static uint8 appr_seen, enter_seen;
 static brick_t brick = {0};
 static uint32 last_navigation_frame_ms;
@@ -414,6 +415,23 @@ int main(void)
                         control_left, control_right, control_mid, MT9V03X_H, MT9V03X_W, now);
                 }
             }
+            uint8_t ring_inside_mode =
+                (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
+                (track_nav.phase == NAV_INSIDE ||
+                 (track_nav.phase == NAV_SLOW && track_nav.slow_resume_phase == NAV_INSIDE));
+            if (ring_inside_mode && !zebra_candidate && !passing && !stopped &&
+                now - track_nav.started_ms >= NAV_RING_EDGE_EXIT_MIN_MS &&
+                track_nav.ring_edge_turn_hint)
+            {
+                if (ring_edge_turn_frames < NAV_RING_EDGE_EXIT_FRAMES)
+                    ++ring_edge_turn_frames;
+            }
+            else ring_edge_turn_frames = 0;
+            if (ring_edge_turn_frames >= NAV_RING_EDGE_EXIT_FRAMES)
+            {
+                track_nav_request_ring_exit(&track_nav, MT9V03X_H, MT9V03X_W, now);
+                ring_edge_turn_frames = 0;
+            }
             if(track_nav.phase==NAV_APPROACH) appr_seen=1;
             if(track_nav.phase==NAV_ENTER) enter_seen=1;
             float mid_err = (MT9V03X_W / 2) - control_mid[near_row];
@@ -482,7 +500,7 @@ int main(void)
             char nav_extra[384];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d",
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u",
                 (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
@@ -505,7 +523,8 @@ int main(void)
                 (unsigned)track_nav.exit_reject_rows,
                 (unsigned)track_nav.exit_evidence,(int)track_nav.exit_guide_slope,
                 (unsigned)control_mid[near_row],(unsigned)control_mid[far_row],
-                (int)(mid_err*10.0f),(int)(tmp_duty*10.0f));
+                (int)(mid_err*10.0f),(int)(tmp_duty*10.0f),
+                (unsigned)track_nav.ring_edge_turn_hint,(unsigned)track_nav.exit_path_frames);
             Wireless_Nav_Update(nav_extra);
             Wireless_Path_Update(track_nav.path_valid[near_row],track_nav.path_valid[far_row],
                 track_nav.learned[near_row],track_nav.learned[far_row],track_nav.drive_valid);

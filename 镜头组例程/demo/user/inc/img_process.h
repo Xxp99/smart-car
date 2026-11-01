@@ -63,6 +63,8 @@ const char *track_element_name(track_element_t element);
 #define NAV_RING_STRAIGHT_EXIT_MIN_MS (1200u) // 备用直线出口证据需在环内持续运行后才启用
 #define NAV_STAGE_MIN_MS         (150u)
 #define NAV_RING_EXIT_MIN_MS     (400u)
+#define NAV_RING_EDGE_EXIT_MIN_MS (6000u) // 环岛确认后达到此时间，才允许贴边补线触发出口转向
+#define NAV_RING_EDGE_EXIT_FRAMES (3u)    // 控制路径连续贴边帧数
 #define NAV_INSIDE_MIN_MS        (500u)
 #define NAV_HOLD_MS              (200u)
 #define NAV_INSIDE_HOLD_MS       (500u)
@@ -118,7 +120,7 @@ typedef struct
     uint8_t feature_frames, straight_frames, exit_confirm_frames, exit_path_frames;
     uint8_t exit_anchor, guide_valid, drive_valid, entry_pending;
     uint8_t exit_guide_row, exit_guide_center, exit_guide_valid;
-    uint8_t exit_evidence, exit_straight_fallback;
+    uint8_t exit_evidence, exit_straight_fallback, ring_edge_turn_hint;
     int16_t exit_guide_slope;
     uint8_t entry_guide; // 当前近控制行：0参考边回退，1开口引导，2真实岛边
     uint8_t entry_gap_valid, entry_gap_rows, entry_edge_rows, entry_guided_rows;
@@ -135,6 +137,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                       const uint8_t *raw_left, const uint8_t *raw_right, const uint8_t *binary,
                       uint8_t *left, uint8_t *right, uint8_t *mid,
                       uint8_t rows, uint8_t cols, uint32_t now_ms);
+void track_nav_request_ring_exit(track_nav_t *nav, uint8_t rows, uint8_t cols, uint32_t now_ms);
 const char *track_nav_name(track_nav_phase_t phase);
 
 void get_hist_gram(unsigned char* _img,
