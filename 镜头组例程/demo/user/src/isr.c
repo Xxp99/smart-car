@@ -46,17 +46,20 @@ int16 encoder_data_4 = 0;
 
 
 
+// 摄像头接口中断入口：交给逐飞驱动完成帧/行事件处理，随后执行数据同步屏障。
 void CSI_IRQHandler(void)
 {
     CSI_DriverIRQHandler();     // 调用SDK自带的中断函数 这个函数最后会调用我们设置的回调函数
     __DSB();                    // 数据同步隔离
 }
 
+// SysTick目前未承载控制任务；速度环使用PIT固定周期，避免被系统节拍改动影响。
 void SysTick_Handler(void)
 {
 
 }
 
+// 周期中断：读取并清零编码器增量、累计里程、更新速度目标和左右轮PI，再清中断标志。
 void PIT_IRQHandler(void)
 {
     if (pit_flag_get(PIT_CH0))
@@ -133,6 +136,7 @@ void PIT_IRQHandler(void)
     __DSB();
 }
 
+// UART1接收入口；仅在调试串口中断模式启用时转交调试接收处理函数。
 void LPUART1_IRQHandler(void)
 {
     if(kLPUART_RxDataRegFullFlag & LPUART_GetStatusFlags(LPUART1))
@@ -169,6 +173,7 @@ void LPUART3_IRQHandler(void)
     LPUART_ClearStatusFlags(LPUART3, kLPUART_RxOverrunFlag);    // 不允许删除
 }
 
+// UART4接收入口：逐飞FlexIO摄像头协议回调由驱动初始化时注册。
 void LPUART4_IRQHandler(void)
 {
     if(kLPUART_RxDataRegFullFlag & LPUART_GetStatusFlags(LPUART4))
@@ -183,6 +188,7 @@ void LPUART4_IRQHandler(void)
     LPUART_ClearStatusFlags(LPUART4, kLPUART_RxOverrunFlag);    // 不允许删除
 }
 
+// UART5接收入口：逐飞普通串口摄像头协议回调由驱动注册。
 void LPUART5_IRQHandler(void)
 {
     if(kLPUART_RxDataRegFullFlag & LPUART_GetStatusFlags(LPUART5))
@@ -209,6 +215,7 @@ void LPUART6_IRQHandler(void)
 }
 
 
+// UART8复用无线发送：先推进已启用的发送中断，再转交可选的无线接收回调。
 void LPUART8_IRQHandler(void)
 {
 #if WIRELESS_SPEED_ENABLE
@@ -250,6 +257,7 @@ void GPIO1_Combined_16_31_IRQHandler(void)
     
 }
 
+// GPIO2中断入口中调用FlexIO摄像头VSYNC回调，并清除本组相关外部中断标志。
 void GPIO2_Combined_0_15_IRQHandler(void)
 {
     // 勿删除此IF语句

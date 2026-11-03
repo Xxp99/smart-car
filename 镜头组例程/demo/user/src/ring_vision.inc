@@ -8,12 +8,14 @@
 typedef struct { int16_t x, y; } ring_trace_point_t;
 static ring_trace_point_t ring_trace[RING_TRACE_MAX];
 
+// 按统一的左右镜像坐标读取道路白像素；越界一律视为非白，供轮廓跟踪安全终止。
 static int ring_white(const uint8_t *im, int x, int y, int rows, int cols, int side)
 {
     if (x < 0 || x >= cols || y < 0 || y >= rows) return 0;
     return im[y * cols + (side ? x : cols - 1 - x)] > 127;
 }
 
+// Moore八邻域轮廓跟踪：从起点沿白色道路邻接的黑色岛边走，直到闭合、出界或容量上限。
 static int ring_trace_edge(const uint8_t *im, int sx, int sy, int rows, int cols, int side)
 {
     // Counterclockwise: start with the black neighbour to the right.
@@ -42,6 +44,7 @@ static int ring_trace_edge(const uint8_t *im, int sx, int sy, int rows, int cols
     return count;
 }
 
+// 把内部统一坐标转换回屏幕坐标，形成供显示与调试使用的A/B/C点。
 static ring_point_t ring_point(int i, int cols, int side)
 {
     ring_point_t p;
@@ -51,6 +54,7 @@ static ring_point_t ring_point(int i, int cols, int side)
     return p;
 }
 
+// 汇总一侧边线连续性并追踪环岛轮廓，按曲率极值提取A/B/C调试点；不直接控制舵机。
 static void ring_find_side(ring_side_t *out, const uint8_t *im,
     const uint8_t *edge, int rows, int cols, int side)
 {

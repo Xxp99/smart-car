@@ -1,3 +1,4 @@
+// 主循环/中断控制集成测试：检查特殊元素接管顺序、速度停车锁存和显示文本缓冲长度。
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>

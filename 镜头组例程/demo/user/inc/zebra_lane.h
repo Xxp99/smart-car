@@ -23,11 +23,13 @@ typedef struct {
     float angle;
 } zebra_lane_t;
 
+// 几何拟合中的整数/浮点绝对值辅助函数。
 static int zebra_lane_abs(int x) {return x<0?-x:x;}
 static float zebra_lane_absf(float x) {return x<0.0f?-x:x;}
 
 /* 返回朝向道路的黑色像素。有限的内部斑马线条纹外侧是白色，
  * 无法满足边界外侧必须为黑色的条件。 */
+// 沿图像中心向外搜索道路白区与黑背景的交界，优先选择靠近预期边界位置的候选。
 static int zebra_lane_outer(const uint8_t *row,unsigned w,int side,int expected)
 {
     int black=0,best=-1,best_score=10000;
@@ -55,6 +57,7 @@ static int zebra_lane_outer(const uint8_t *row,unsigned w,int side,int expected)
 
 /* 至少八个连续的当前帧采样点才构成边界线段。
  * 边界突跳会切断支撑，短斑点或岔路不能成为道路边界。 */
+// 将边界点按连续性分段，仅保留长度达标且相邻行跳变有限的真实线段。
 static void zebra_lane_support(const int16_t *raw,uint8_t *supported,int h,int first)
 {
     int start=first;
@@ -73,6 +76,7 @@ static void zebra_lane_support(const int16_t *raw,uint8_t *supported,int h,int f
 /* 优先使用真实支撑点，否则从附近的上方线段投影。
  * 投影点可能超出画面；调用者需加上标定半车道宽后检查中心位置。
  * 合成点不得作为新的真实证据。 */
+// 目标行缺少真实点时，用最近的上方连续线段线性拟合外推；拟合误差过大则拒绝。
 static int zebra_lane_project(const int16_t *raw,const uint8_t *supported,
                               int target,int h,int first,float *value)
 {
@@ -104,6 +108,7 @@ static int zebra_lane_project(const int16_t *raw,const uint8_t *supported,
     return 1;
 }
 
+// 从斑马线条纹外侧重建道路两边和控制中线，并用近/远控制行有效性决定是否接管。
 static void zebra_lane_build(zebra_lane_t *s,const uint8_t *image,
     const uint8_t *width,const uint8_t *learned,uint8_t *mid,uint8_t *valid,
     unsigned h,unsigned w,uint32_t now)
@@ -167,6 +172,7 @@ static void zebra_lane_build(zebra_lane_t *s,const uint8_t *image,
     }
 }
 
+// 斑马线接管时跟随重建中线；短暂失效保持上次角度，结束后限速回到普通循迹角度。
 static float zebra_lane_steering(zebra_lane_t *s,float target,uint8_t guide_valid,
     uint8_t active,uint32_t now,float previous_angle,float neutral)
 {

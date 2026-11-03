@@ -10,6 +10,7 @@
 #define WIRELESS_IMAGE_HEIGHT 80u
 #define WIRELESS_IMAGE_PIXELS (WIRELESS_IMAGE_WIDTH * WIRELESS_IMAGE_HEIGHT)
 #define WIRELESS_IMAGE_BYTES (16u + WIRELESS_IMAGE_PIXELS + 3u * WIRELESS_IMAGE_HEIGHT)
+// 图像与三条边界合并为不可变发送包；发送期间不覆盖缓冲区，避免新帧撕裂旧帧。
 static uint8 wireless_image_packet[WIRELESS_IMAGE_BYTES];
 static volatile uint32 wireless_image_pos;
 static volatile uint8 wireless_image_active;
@@ -17,8 +18,10 @@ static volatile uint16 wireless_image_sent;
 static uint8 wireless_image_ready, wireless_image_capturing;
 static uint32 wireless_image_last_ms;
 
+// 开始准备一帧图像；若上一帧仍在发送、采集中或节流时间未到则直接跳过。
 static void Wireless_Image_Begin(const uint8 *gray)
 {
+    // 以不高于10帧/秒的节流频率缩小灰度图并写入协议头；控制仍使用原始分辨率。
     uint32 x, y;
     uint32 now = control_time_ms;
     uint8 *p = wireless_image_packet;
@@ -40,6 +43,7 @@ static void Wireless_Image_Begin(const uint8 *gray)
 
 static void Wireless_Image_Commit(const uint8 *left, const uint8 *mid, const uint8 *right)
 {
+    // 将对应行的左右边界和中线缩放到预览分辨率；全部写完后才发布给TX中断。
     uint32 y, row;
     uint8 *p = wireless_image_packet + 8 + WIRELESS_IMAGE_PIXELS;
     if (!wireless_image_capturing) return;
@@ -61,6 +65,7 @@ static void Wireless_Image_Commit(const uint8 *left, const uint8 *mid, const uin
 
 void Wireless_Image_Tx_IRQHandler(void)
 {
+    // 中断分段发送当前完整数据包，遇RTS暂停立即退出，不在中断里等待对端。
     uint8 budget = 30;
     if (!wireless_image_active)
     {
@@ -89,6 +94,7 @@ void Wireless_Image_Tx_IRQHandler(void)
 
 static void Wireless_Image_Poll(void)
 {
+    // RTS恢复允许发送时重新开启TX中断；不复制或修改正在发送的数据包。
     if (wireless_image_ready && wireless_image_active &&
         !gpio_get_level(WIRELESS_UART_RTS_PIN))
         uart_tx_interrupt(WIRELESS_UART_INDEX, 1);
@@ -96,6 +102,7 @@ static void Wireless_Image_Poll(void)
 
 static void Wireless_Image_Show(void)
 {
+    // 显示队列状态、RTS和发送计数；发送计数只表示写入UART完成，不是上位机确认。
     char row[22];
     uint32 pending = wireless_image_active ? WIRELESS_IMAGE_BYTES - wireless_image_pos : 0;
     // F counts packets queued to UART, not acknowledgements from the PC.

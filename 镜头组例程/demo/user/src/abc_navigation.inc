@@ -1,4 +1,5 @@
-// 环岛确认只维护识别投票；行驶状态统一由 img_process.c 中的导航器处理。
+// 多帧元素确认器：维护环岛方向投票、当前候选和释放计数；只输出识别标签，
+// 不负责补线或行驶阶段切换，导航控制统一由 img_process.c 中的状态机处理。
 void abc_element_update(track_detector_t *state, track_element_t candidate)
 {
     int is_ring = candidate == TRACK_ROUND_LEFT || candidate == TRACK_ROUND_RIGHT;

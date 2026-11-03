@@ -20,6 +20,7 @@
 #define ZEBRA_FINISH_CLEAR_COUNTS 1750u
 
 /* Binary input, before overlay. Require repeated runs, not a single black bar. */
+// 统计采样线上黑白跳变次数，作为斑马线条纹密度的基础量。
 static unsigned zebra_transitions(const uint8_t *p, unsigned count, unsigned step)
 {
     unsigned chain = 0, longest = 0, run = 0;
@@ -48,6 +49,7 @@ static unsigned zebra_transitions(const uint8_t *p, unsigned count, unsigned ste
 #define ZEBRA_PROBE_COUNT 21
 #define ZEBRA_PROBE_MIN_GOOD 15
 #define ZEBRA_PROBE_MAX_BAD_RUN 2
+// 从一条扫描线上提取多组黑条起止位置；少于规定数量或宽度非法时拒绝该扫描线。
 static int zebra_bars(const uint8_t *p, unsigned n, unsigned step,
                       int start, int *lo, int *hi)
 {
@@ -65,6 +67,7 @@ static int zebra_bars(const uint8_t *p, unsigned n, unsigned step,
     }
     return 1;
 }
+// 检查提取到的黑条宽度、间隔是否落在允许变化范围，抑制随机纹理误报。
 static int zebra_regular(const int *lo,const int *hi,int span)
 {
     int minw=1000,maxw=0,ming=1000,maxg=0;
@@ -82,6 +85,7 @@ static int zebra_regular(const int *lo,const int *hi,int span)
     }
     return maxw<=minw*2 && maxg<=ming*2 && maxg<=minw*3 && maxw<=ming*3;
 }
+// 在多个邻近扫描位置重复验证条纹节奏；要求足够多探测线通过且连续失败不能过长。
 static int zebra_patch(const uint8_t *base,unsigned length,unsigned step,unsigned probe_step)
 {
     int lo[4],hi[4],prev_lo[4],prev_hi[4];
@@ -124,6 +128,7 @@ static int zebra_patch(const uint8_t *base,unsigned length,unsigned step,unsigne
     }
     return 0;
 }
+// 在水平与垂直方向寻找规则条纹区域，并结合输入边线限定有效道路区域。
 static uint8_t zebra_detect_lane(const uint8_t *image,unsigned h,unsigned w,
                                   const uint8_t *left,const uint8_t *right)
 {
@@ -178,6 +183,7 @@ typedef struct
     float steering_angle, steering_target;
 } zebra_pass_t;
 
+// 判断指定行边界是否真实、宽度合理且不被条纹污染，用于恢复普通循迹路径。
 static uint8_t zebra_row_valid(const uint8_t *l, const uint8_t *r,
                                const uint8_t *bad, unsigned y, unsigned w)
 {
@@ -265,11 +271,13 @@ static void zebra_update(zebra_pass_t *s, uint8_t candidate, uint8_t path_valid,
     }
 }
 
+// 候选或任一非普通阶段都要求使用斑马线专用限速。
 static uint8_t zebra_slow(const zebra_pass_t *s, uint8_t candidate)
 {
     return candidate || s->phase != ZEBRA_NORMAL;
 }
 
+// 旧版舵角渐变接口保留给兼容调用；当前主循环使用zebra_lane_steering完成相同职责。
 static float zebra_steering(zebra_pass_t *s, float tracking_angle, uint32_t now)
 {
     if (s->phase == ZEBRA_STRAIGHT)
@@ -385,6 +393,7 @@ static void zebra_race_update(zebra_race_t *race, const zebra_pass_t *pass,
         race->phase = ZEBRA_RACE_STOP;
 }
 
+// 将通过阶段映射为定长LCD提示，状态文本长度需适配屏幕字符宽度。
 static const char *zebra_status(const zebra_pass_t *s, const zebra_race_t *race,
                                uint8_t candidate)
 {

@@ -10,6 +10,7 @@
 /*
  *@func: 二值化函数
  */
+// 按给定阈值原地把灰度图转换为0/255二值图；后续边线扫描约定白路黑底。
 void binaryzation_process(unsigned char* _img, 
                           const unsigned short _rows, 
                           const unsigned short _cols, 
@@ -28,6 +29,7 @@ void binaryzation_process(unsigned char* _img,
 /*
  *@func: 获取直方图
  */
+// 统计0..255灰度直方图，为大津法计算当前帧分割阈值。
 void get_hist_gram(unsigned char* _img,
 				   const unsigned short _rows, 
 				   const unsigned short _cols, 
@@ -46,6 +48,7 @@ void get_hist_gram(unsigned char* _img,
 /*
  *@func: 大津法求阈值
  */
+// 通过最大化前景/背景类间方差求阈值；图像只有一两种灰度时走快速返回分支。
 unsigned char get_threshold_otsu(const short* _hist_gram)
 {
     int X, Y, amount = 0;
@@ -90,6 +93,8 @@ unsigned char get_threshold_otsu(const short* _hist_gram)
     return threshold;
 }
 
+// 从图像底部向上逐行扫描左右黑色边界，并以相邻行中心作为下一行搜索起点。
+// 找不到边界时使用图像边缘哨兵值；识别逻辑应结合坐标合法性判断，不能把哨兵当真边线。
 void auxiliary_process(uint8_t* _src_pixel_mat, uint8_t _src_rows, uint8_t _src_cols, 
 					   unsigned char _threshold_val, 
 					   uint8_t* _left_line, uint8_t* _mid_line, uint8_t* _right_line)
@@ -179,7 +184,7 @@ void auxiliary_process(uint8_t* _src_pixel_mat, uint8_t _src_rows, uint8_t _src_
     }
 }
 
-// 0=双边有效，1=左开口，2=右开口，3=双开口，4=无效几何。
+// 将边界坐标编码成紧凑类型：0=双边有效，1=左开口，2=右开口，3=双开口，4=坐标无效。
 static uint8_t track_row_kind(uint8_t left, uint8_t right, uint8_t cols)
 {
     if (left >= right || right >= cols)
@@ -190,6 +195,7 @@ static uint8_t track_row_kind(uint8_t left, uint8_t right, uint8_t cols)
 }
 
 // 环岛专用边缘容差，不改变十字判据或实际提取的边线。
+// 环岛专用行分类允许边线在图像边缘小范围波动，普通十字识别仍使用严格边缘条件。
 static uint8_t round_row_kind(uint8_t left, uint8_t right, uint8_t cols)
 {
     if (left >= right || right >= cols) return 4;
@@ -197,11 +203,13 @@ static uint8_t round_row_kind(uint8_t left, uint8_t right, uint8_t cols)
            (right >= cols - 1 - ROUND_EDGE_MARGIN ? 2 : 0);
 }
 
+// 对侧参考边线必须留在图像内部，避免把边缘哨兵坐标当作真实轮廓。
 static int round_outer_visible(int x, int cols)
 {
     return x > ROUND_EDGE_MARGIN && x < cols - 1 - ROUND_EDGE_MARGIN;
 }
 
+// 判断指定环岛方向允许的参考边线出画侧，反方向出画视为异常而非可补缺口。
 static int round_outer_lost(int x, int cols, int left_ring)
 {
     // 仅允许从参考边线自己的一侧出画；另一侧边缘及非法坐标不能补。
@@ -229,6 +237,7 @@ static int round_clip_supported(const uint8_t *outer, int first, int end,
            a - b <= step && d - c <= step;
 }
 
+// 验证参考外边线大部分行真实可见，短暂出画需满足出画/回画趋势约束。
 static int round_outer_continuous(const uint8_t *outer, int first, int last,
                                   int rows, int cols, int left_ring)
 {
@@ -258,6 +267,7 @@ static int round_outer_continuous(const uint8_t *outer, int first, int last,
 }
 
 // 仅供控制补线：短缺口用本帧上下真实点插值，绝不写回识别用的原始边线。
+// 只为控制路径估算经验证的短出画段；识别用raw边界数组保持不变。
 static int round_outer_estimate(const uint8_t *outer, int row, int rows,
                                int cols, int left_ring, int *estimate)
 {
@@ -271,6 +281,7 @@ static int round_outer_estimate(const uint8_t *outer, int row, int rows,
     return 1;
 }
 
+// 环岛几何分类：找单侧连续开口，并验证开口上下锚点和对侧外边线连续性。
 static track_element_t round_classify(const uint8_t *left, const uint8_t *right,
                                      uint8_t rows, uint8_t cols, int *saw_loss)
 {
@@ -336,6 +347,7 @@ static track_element_t round_classify(const uint8_t *left, const uint8_t *right,
     return result;
 }
 
+// 十字分类使用两侧边线开口组合；判据与环岛开口分离，避免同一缺边直接当环岛。
 static track_element_t track_cross_classify(const uint8_t *left, const uint8_t *right,
                                             uint8_t rows, uint8_t cols)
 {
@@ -379,6 +391,7 @@ static track_element_t track_cross_classify(const uint8_t *left, const uint8_t *
     return result != TRACK_NONE ? result : (saw_loss ? TRACK_UNKNOWN : TRACK_NONE);
 }
 
+// 单帧分类入口：同时计算十字与左右环岛证据；证据冲突或几何不完整时返回UNKNOWN。
 track_element_t track_element_classify(const uint8_t *left, const uint8_t *right,
                                       uint8_t rows, uint8_t cols)
 {
@@ -395,6 +408,7 @@ track_element_t track_element_classify(const uint8_t *left, const uint8_t *right
 
 // A clipped opening has only one visible corner. Require a smooth opposite
 // boundary, not just continuity; the other corner is never synthesized.
+// 提取单帧局部环岛开口信息，供跨帧序列确认使用；此函数不直接切换行驶状态。
 static int round_partial(const uint8_t *left,const uint8_t *right,int rows,int cols,
                           int is_left,int *corner,int *kind)
 {
@@ -429,6 +443,7 @@ static int round_partial(const uint8_t *left,const uint8_t *right,int rows,int c
     return 1;
 }
 
+// 跨帧观察边线开口的出现、移动与闭合顺序，作为当前帧几何分类之外的后备证据。
 void track_element_observe(track_detector_t *state,const uint8_t *left,const uint8_t *right,
                            uint8_t rows,uint8_t cols,uint32_t now_ms)
 {
@@ -465,6 +480,7 @@ void track_element_observe(track_detector_t *state,const uint8_t *left,const uin
 }
 
 // Robust local bands replace the two exact-row requirement for telemetry only.
+// 粗略估计道路直/弯形状，仅用于遥测显示，不驱动特殊元素状态切换。
 uint8_t track_road_shape(const uint8_t *left, const uint8_t *right,
                          uint8_t rows, uint8_t cols)
 {
@@ -489,6 +505,7 @@ uint8_t track_road_shape(const uint8_t *left, const uint8_t *right,
     return offset>=-5 && offset<=5 && change>=-5 && change<=5 ? 1 : 2;
 }
 
+// 对普通元素候选做连续确认与释放计数，输出确认标签而非环岛导航阶段。
 void track_element_update(track_detector_t *state, track_element_t candidate)
 {
     int required = candidate == TRACK_ROUND_LEFT || candidate == TRACK_ROUND_RIGHT ?
@@ -528,6 +545,7 @@ void track_element_update(track_detector_t *state, track_element_t candidate)
     }
 }
 
+// 把元素枚举转换为稳定的短文本，供屏幕和无线诊断字段使用。
 const char *track_element_name(track_element_t element)
 {
     switch (element)
@@ -540,16 +558,19 @@ const char *track_element_name(track_element_t element)
     }
 }
 
+// 导航补线坐标限幅，确保合成边界不会越过图像可用区域。
 static int nav_clip(int value, int low, int high)
 {
     return value < low ? low : (value > high ? high : value);
 }
 
+// 判断一行是否有两条位于图像内部且宽度合理的真实道路边界。
 static int nav_pair(uint8_t left, uint8_t right, uint8_t cols)
 {
     return left > 0 && right < cols - 1 && right - (int)left >= cols / 10;
 }
 
+// 统一切换导航阶段并记录进入时间；各阶段的最短驻留/超时判定据此计时。
 static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
 {
     track_nav_phase_t previous_phase = nav->phase;
@@ -581,6 +602,7 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
 }
 
 // 路径补线连续贴到画面边缘时，按已锁定的环岛方向启动出口转向阶段。
+// 外部出口证据达到门槛后进入NAV_EXIT，并建立短时固定方向转向窗口。
 void track_nav_request_ring_exit(track_nav_t *nav, uint8_t rows, uint8_t cols, uint32_t now_ms)
 {
     if (!nav || rows == 0 || cols == 0 ||
@@ -596,6 +618,7 @@ void track_nav_request_ring_exit(track_nav_t *nav, uint8_t rows, uint8_t cols, u
 }
 
 // 十字：只连接上下真实边线之间的缺口，不把整片丢线当成可用路径。
+// 仅插值连接两端都有真实支撑的有限缺口，整段丢线和过长缺口保持无效。
 static void nav_bridge(uint8_t *edge, int rows, int cols, int is_left)
 {
     for (int y = rows / 4; y < rows; )
@@ -616,6 +639,7 @@ static void nav_bridge(uint8_t *edge, int rows, int cols, int is_left)
 
 // 远端道路必须有连续真实双边线，宽度与入元素前标定一致。
 // 返回最靠近指定上界的有效段；不把插值或历史中线当作出口证据。
+// 查找真实双边线形成的远端道路段，并检查宽度连续性和中线斜率。
 static int nav_far_road(const track_nav_t *nav, const uint8_t *left,
                         const uint8_t *right, int rows, int cols, int limit,
                         int *row, int *center, int *slope)
@@ -647,6 +671,7 @@ static int nav_far_road(const track_nav_t *nav, const uint8_t *left,
 }
 
 // 出口要求外侧有明确开口端点，且开口上方存在真实出口道路。
+// 验证环岛出口开口及其相邻远端道路，返回候选行、中线和方向斜率。
 static int nav_exit_road(const track_nav_t *nav, const uint8_t *left,
                          const uint8_t *right, int rows, int cols, int is_left,
                          int *row, int *center, int *slope)
@@ -672,6 +697,7 @@ static int nav_exit_road(const track_nav_t *nav, const uint8_t *left,
 
 // Detect an interior black cap on the island side. Reject edge-connected black
 // background and isolated pixels; require white above and four supported rows.
+// 在二值图中寻找岛侧黑色凸起尖端，并要求相邻帧位置相近后才标记有效。
 static void nav_ring_apex(track_nav_t *nav, const uint8_t *binary,
                            int rows, int cols, int is_left, uint32_t now_ms)
 {
@@ -721,6 +747,7 @@ static void nav_ring_apex(track_nav_t *nav, const uint8_t *binary,
 
 // Follow the current cap's connected black component. The road-facing edge is
 // a boundary, never a centerline target. Stop on loss/branch/jump; no extrapolation.
+// 从已确认岛尖沿黑色岛边逐行跟踪；遇到断裂、分叉或突跳就停止生成轮廓。
 static void nav_ring_contour(const track_nav_t *nav, const uint8_t *binary,
                              int rows, int cols, int is_left, uint8_t *edge)
 {
@@ -753,6 +780,7 @@ static void nav_ring_contour(const track_nav_t *nav, const uint8_t *binary,
 
 // A near opening may guide ENTER without a visible cap. Require current real
 // endpoints and the same bounded outer-edge support used by recognition.
+// 判断入口侧开口是否有上下真实边线锚点及连续外侧支撑，避免在大面积丢线时补入。
 static int nav_entry_gap(const uint8_t *left, const uint8_t *right,
                          int row, int rows, int cols, int is_left, int *first, int *end)
 {
@@ -785,6 +813,7 @@ static int nav_entry_gap(const uint8_t *left, const uint8_t *right,
 
 // Restored straight boundaries alone do not prove the car turned into a ring.
 // Require a same-direction near/far bend supported by five real pairs per band.
+// 比较近、远两组真实双边线的中心变化，确认车辆确实开始朝环岛方向转入。
 static int nav_entry_turn(const uint8_t *left, const uint8_t *right,
                           int near, int far, int cols, int is_left)
 {
@@ -800,6 +829,7 @@ static int nav_entry_turn(const uint8_t *left, const uint8_t *right,
 
 // Seed missing row widths only from current real, consecutive boundary pairs.
 // Interpolate enclosed gaps; do not extrapolate from one side or use 0/W-1.
+// 环岛期间只用当前帧两侧真实边线之间的封闭区间补充宽度，禁止单边外推。
 static void nav_seed_ring_width(track_nav_t *nav, const uint8_t *left,
                                 const uint8_t *right, int rows, int cols)
 {
@@ -824,6 +854,7 @@ static void nav_seed_ring_width(track_nav_t *nav, const uint8_t *left,
 #include "ring_vision.inc"
 #include "abc_navigation.inc"
 
+// 环岛/十字导航主状态机：先复制原始线，再按阶段生成控制补线并更新出口、丢线与恢复状态。
 void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                       const uint8_t *raw_left, const uint8_t *raw_right, const uint8_t *binary,
                       uint8_t *left, uint8_t *right, uint8_t *mid,
@@ -863,6 +894,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             both_open += left[y] == 0 && right[y] == cols - 1;
         }
     }
+    // 当前帧候选只用于积累证据；只有多帧确认结果才能启动特殊元素导航。
     int ring_confirmed = detector->confirmed==TRACK_ROUND_LEFT ||
                          detector->confirmed==TRACK_ROUND_RIGHT;
     if (ring_confirmed && detector->candidate==detector->confirmed &&
@@ -878,6 +910,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         if(round_outer_visible(outer[near],cols) && round_outer_visible(outer[far],cols))
             nav_stage(nav,NAV_APPROACH,now_ms);
     }
+    // 普通循迹只在元素确认后切入特殊阶段；宽度未学习时进入SLOW等待，不用猜测宽度强行补线。
     if (nav->phase == NAV_NORMAL && detector->confirmed != TRACK_NONE &&
         detector->confirmed != TRACK_UNKNOWN)
     {
@@ -938,6 +971,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav->straight_frames>=NAV_RING_EXIT_STRAIGHT_FRAMES &&
         detector->confirmed==TRACK_NONE &&
         (detector->candidate==TRACK_NONE || detector->candidate==TRACK_UNKNOWN));
+    // 环内出口同时参考开口+远端道路或持续直路后备证据，避免瞬时开口结束环岛。
     int ring_exit_feature = ring_path_phase == NAV_INSIDE &&
         ((outer_open >= rows / 20 && both_open == 0 && exit_evidence) ||
          nav->exit_straight_fallback);
@@ -960,6 +994,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     }
     else nav->straight_frames = 0;
 
+    // 阶段转换统一按持续帧数与最短驻留时间判断，随后清零阶段计时和阶段内计数。
     uint32_t elapsed = now_ms - nav->stage_ms;
     if (nav->phase == NAV_APPROACH && nav->feature_frames >= NAV_FEATURE_FRAMES)
         nav_stage(nav, NAV_ENTER, now_ms);
@@ -998,6 +1033,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav->element = TRACK_NONE;
     }
 
+    // 出口阶段优先用本帧真实远端道路；短暂缺失时只沿用先前验证过的出口引导。
     if (nav->phase == NAV_EXIT ||
         (nav->phase == NAV_SLOW && ring_path_phase == NAV_EXIT))
     {
@@ -1037,6 +1073,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     nav->exit_reject_rows=0;
     uint32_t path_hold_ms=(ring_path_phase==NAV_INSIDE || ring_path_phase==NAV_EXIT) ?
                           NAV_INSIDE_HOLD_MS : NAV_HOLD_MS;
+    // 逐行生成控制补线：每个候选中心都须落在可行驶白区，边线识别数组保持原始值。
     for (int y = rows / 4; y < rows; ++y)
     {
         int usable = nav_pair(left[y], right[y], cols);
@@ -1214,6 +1251,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     }
 }
 
+// 将导航阶段转换为可读名称；故障原因另由track_nav_t.fault单独记录。
 const char *track_nav_name(track_nav_phase_t phase)
 {
     switch (phase)

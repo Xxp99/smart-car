@@ -3,7 +3,8 @@
 
 #include "zf_common_headfile.h"
 
-// 左右轮共用动态目标速度，单位：编码器计数/采样周期（不是 RPM）。
+// 左右轮共用动态目标速度，单位：编码器计数/采样周期（不是RPM，也不是物理速度单位）。
+// 调参时需保持PIT采样周期与编码器计数尺度不变，或同步重新标定PI参数。
 #define SPEED_STRAIGHT_TARGET    (50.0f)
 #define SPEED_CURVE_TARGET       (50.0f)  // 弯道/环岛目标速度再次小幅提高
 #define SPEED_BEND_START         (5.0f)   // 像素偏差不超过此值时使用直道速度

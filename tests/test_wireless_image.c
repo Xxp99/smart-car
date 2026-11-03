@@ -31,6 +31,7 @@ static void tft180_show_string(int x, int y, char *s)
     (void)x; (void)y;
     assert(strlen(s) == 21);
 }
+// 无线图像协议测试：用模拟UART核对缩放图像、三条边界数据及流控暂停后的续传。
 #include "wireless_image.h"
 #include "reference.h"
 static detector_camera_struct detector_camera_data;

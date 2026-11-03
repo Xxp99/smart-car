@@ -1,3 +1,4 @@
+// 红砖避让回归测试：用合成边线验证双侧检测、连续确认、偏移方向、保持与编码器清空距离。
 #include <assert.h>
 #include <stdio.h>
 #include "../镜头组例程/demo/user/inc/brick_avoid.h"

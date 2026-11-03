@@ -5,7 +5,9 @@
 // ASCII telemetry at 10Hz. Speed unit: encoder counts / 10ms.
 #define WIRELESS_SPEED_PERIOD_MS 100u
 #define WIRELESS_SPEED_BYTES 768u
+// 无线遥测采用单缓冲区、逐字节中断发送；主循环只在上一包结束后组下一包。
 static char wireless_nav_extra[448];
+// 下列更新函数只缓存主循环快照，不在调用处做格式化或串口阻塞发送。
 static void Wireless_Nav_Update(const char *text)
 { snprintf(wireless_nav_extra,sizeof wireless_nav_extra,"%s",text); }
 static uint8 wireless_speed_packet[WIRELESS_SPEED_BYTES];
@@ -43,6 +45,7 @@ static uint32 wireless_speed_last_ms;
 
 void Wireless_Speed_Tx_IRQHandler(void)
 {
+    // 中断每次最多发送固定字节数，受RTS硬件流控；结束后关闭TX中断等待下一包。
     uint8 budget = 30;
     if (!wireless_speed_active)
     {
@@ -70,6 +73,7 @@ void Wireless_Speed_Tx_IRQHandler(void)
 
 static void Wireless_Speed_Poll(void)
 {
+    // 主循环按10Hz快照控制量与识别状态，格式化一行日志；数据过期时明确标记为stale。
     uint32 now, mask, odom;
     int16 left, right;
     float target;
@@ -128,6 +132,7 @@ static void Wireless_Speed_Poll(void)
 
 static void Wireless_Speed_Show(void)
 {
+    // 屏幕只展示无线模块就绪、RTS状态和已发送包数，不代表电脑端已成功解析。
     char row[22];
     snprintf(row, sizeof(row), "V%u R%u T%05u 10Hz    ",
         (unsigned)wireless_speed_ready,

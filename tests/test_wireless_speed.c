@@ -1,3 +1,4 @@
+// 无线速度遥测测试：模拟RTS忙闲、UART发送预算和日志包完整性，验证不会阻塞主循环。
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>

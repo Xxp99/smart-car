@@ -1,3 +1,4 @@
+// 斑马线检测/状态机回归测试：覆盖横竖条纹、倾斜透视、非等距假图案和道路恢复。
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>

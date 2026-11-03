@@ -1,6 +1,8 @@
 #include "zf_common_headfile.h"
 #include "img_process.h"
 
+// 本文件集中放置本项目板级接线、控制方向、舵机标定和功能开关。
+// 修改引脚宏会改变硬件映射；修改功能宏会改变初始化/主循环中对应模块是否参与。
 // 编码器引脚信息
 // 请确保两轮编码器前进时回传值都为正数，若回传为负请isr.c中encoder_get_count前修改正负号
 // 左轮编码器
@@ -12,6 +14,7 @@
 #define ENCODER_2_A (QTIMER1_ENCODER2_CH1_C2)
 #define ENCODER_2_B (QTIMER1_ENCODER2_CH2_C24)
 
+// 电机PWM与方向引脚；正方向电平必须按实际电机安装方向单独验证。
 // 电机参数设置
 // !!! 请确保dir和pwm脚不要弄反了，否则电机会疯转 !!!
 // 左轮电机
@@ -49,6 +52,7 @@ void Wireless_Image_Tx_IRQHandler(void);
 #define SERVO_TEST_ENABLE (0)
 #endif
 
+// 舵机频率、左右机械限位和中值换算；角度限位应以不顶死舵机机构为准。
 // 舵机参数设置
 #define SERVO_MOTOR_PWM (PWM4_MODULE2_CHA_C30) // 定义主板上舵机对应引脚
 #define SERVO_MOTOR_FREQ (50)                  // 定义主板上舵机频率  请务必注意范围 50-300

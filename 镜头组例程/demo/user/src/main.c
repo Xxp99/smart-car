@@ -42,6 +42,7 @@
 const float servo_motor_duty_middle = (SERVO_MOTOR_R_MAX + SERVO_MOTOR_L_MAX) / 2.f; 
 
 #if C30_LEVEL_TEST_ENABLE
+// C30电平检查：只验证目标引脚是否输出高低电平，不应连接舵机或电机负载。
 static void C30_Level_Test_Run(void)
 {
     // 不启动摄像头、编码器、速度PID及PIT；驱动电机始终零占空比。
@@ -77,6 +78,7 @@ static void C30_Level_Test_Run(void)
 
 #if SERVO_TEST_ENABLE
 // 仅适用于当前C30 / PWM4 SM2 A的边沿对齐测试。显示寄存器推算值，非实测波形。
+// 舵机脉宽诊断：逐步输出测试占空比，用于确认PWM频率、舵机中位和左右方向。
 static void Servo_PWM_Diagnostics(void)
 {
     char row[22];
@@ -128,6 +130,7 @@ static void Servo_PWM_Diagnostics(void)
     tft180_show_string(0, 120, "REG CALC; NOT SCOPE");
 }
 
+// 舵机测试模式：独占主循环并按设定角度摆动；测试结束需关闭宏才能恢复循迹。
 static void Servo_Test_Run(void)
 {
     // 独立启动路径：不初始化摄像头、速度 PID 或 PIT 控制中断。
@@ -165,6 +168,7 @@ static uint32 wireless_test_last_ms;
 static uint16 wireless_test_sent, wireless_test_busy;
 
 // 每秒尝试一次；模块忙或未连接时直接跳过，不等待RTS超时。
+// 无线文字测试的非阻塞发送轮询，受RTS流控且不与图像/速度遥测共用UART。
 static void Wireless_Test_Poll(void)
 {
     static const uint8 message[] = "SmartCar5 UART OK\r\n";
@@ -183,6 +187,7 @@ static void Wireless_Test_Poll(void)
     if (wireless_test_sent < 65535u) ++wireless_test_sent;
 }
 
+// 将无线测试发送状态显示到屏幕，便于区分模块未就绪、被流控和已发送。
 static void Wireless_Test_Show(void)
 {
     char row[22];
@@ -196,6 +201,7 @@ static void Wireless_Test_Show(void)
 
 #endif
 
+// 初始化摄像头、舵机、电机、编码器、无线串口和固定周期速度控制中断。
 void Init()
 {
 
@@ -281,6 +287,7 @@ static uint8 navigation_frame_initialized;
 static uint8_t stripe_row[MT9V03X_H];
 uint8_t control_left[MT9V03X_H], control_right[MT9V03X_H], control_mid[MT9V03X_H];
 
+// 主循环每处理一帧图像：二值化与边线提取→特殊元素调度→速度/舵机控制→显示与遥测。
 int main(void)
 {
     clock_init(SYSTEM_CLOCK_600M); // 不可删除

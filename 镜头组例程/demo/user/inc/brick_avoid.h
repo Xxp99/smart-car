@@ -40,6 +40,7 @@ static const char *brick_reason(const brick_t *s) {
     return names[s->reason<=BRICK_ONE?s->reason:BRICK_FAILED];
 }
 typedef struct {float angle;uint32_t ms;uint8_t initialized;} brick_steering_t;
+// 对请求舵角做每秒限速；路径无效时保持旧角度，是否停车由速度规划器依据valid处理。
 static float brick_steering(brick_steering_t *s,float requested,int owns,int valid,uint32_t now,float center) {
     if(!s->initialized) {s->angle=center;s->ms=now;s->initialized=1;}
     uint32_t dt=now-s->ms;s->ms=now;
@@ -54,7 +55,9 @@ static float brick_steering(brick_steering_t *s,float requested,int owns,int val
     // 路径无效时仅保持舵角；主循环仍须将速度设为零。
     return s->angle;
 }
+// 以下小工具只服务红砖检测和安全范围判断。
 static int brick_abs(int n) {return n<0?-n:n;}
+// 边线坐标需位于图像内部，且两边之间至少保留图像宽度的1/8。
 static int brick_pair(int l,int r,int w) {return l>2 && r<w-3 && r-l>=w/8;}
 
 // 仅检测单侧边界向内的台阶，并用真实道路边界约束范围。
@@ -179,6 +182,7 @@ static const char *brick_name(const brick_t *s) {
     return s->phase==BRICK_AVOID?"BYPAS":"CHECK";
 }
 // 只从当前帧恢复边界，绝不复用上一帧的边线。
+// 检查边界是否不是图像外沿哨兵；只使用真实可见边界推算避让通道。
 static int brick_edge_visible(int x,int w) {return x>2 && x<w-3;}
 static int brick_edge_at(const uint8_t *edge,int y,int h,int w) {
     if(brick_edge_visible(edge[y],w)) return edge[y];
