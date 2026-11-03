@@ -271,6 +271,7 @@ static zebra_lane_t zebra_lane = {0};
 static float last_servo_angle = ZEBRA_STRAIGHT_ANGLE;
 static track_detector_t track_detector = {0};
 static track_nav_t track_nav = {0};
+// 环岛边缘出口提示需连续命中多帧；单帧贴边不应改变环岛阶段。
 static uint8_t ring_edge_turn_frames;
 static uint8 appr_seen, enter_seen;
 static brick_t brick = {0};
@@ -317,6 +318,7 @@ int main(void)
             memcpy(control_right, right_line, sizeof(control_right));
             memcpy(control_mid, mid_line, sizeof(control_mid));
 #if ZEBRA_ENABLE
+            // 先检测斑马线，再尝试重建可用中线。原始图像命中但补线无效时，不能接管方向。
             uint8_t zebra_raw_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
             if (zebra_raw_candidate || zebra.phase != ZEBRA_NORMAL ||
                 zebra_race.phase == ZEBRA_RACE_PASS || zebra_race.phase == ZEBRA_RACE_CLEAR)
@@ -349,6 +351,7 @@ int main(void)
             navigation_frame_initialized = 1;
             last_navigation_frame_ms = now;
 #if ZEBRA_ENABLE
+            // 只有重建后的有效候选才累计确认帧；普通边线恢复需同时满足近、远行稳定。
             uint8_t path_recovered =
                 zebra_row_valid(left_line, right_line, stripe_row, near_row, MT9V03X_W) &&
                 zebra_row_valid(left_line, right_line, stripe_row, far_row, MT9V03X_W);
@@ -369,6 +372,7 @@ int main(void)
             memset(&track_nav.vision,0,sizeof track_nav.vision);
             if (zebra.phase != ZEBRA_NORMAL || finishing || stopped)
             {
+                // 斑马线通过/恢复或终点阶段优先，清除冲突的红砖与元素导航状态。
                 memset(&brick,0,sizeof brick);
                 // 斑马线确认后才接管；候选仅减速，不销毁现有导航阶段。
                 // 保留此前学到的赛道宽度，但清除元素确认和旧路径保持。
@@ -384,6 +388,7 @@ int main(void)
             }
             else if (zebra_candidate)
             {
+                // 斑马线尚在候选确认时只暂停元素计数，保留当前导航阶段和最后可信路径。
                 memset(&brick,0,sizeof brick);
                 track_nav.apex_hits = 0;
                 // 候选图像不能推进元素确认或阶段；暂用此前可信路径。
@@ -400,12 +405,14 @@ int main(void)
             else
             {
                 track_element_t raw_kind=track_visual_classify(&track_nav.vision,&image[0][0],left_line,right_line,MT9V03X_H,MT9V03X_W);
+                // 红砖只可在普通循迹时新接管；已启动的避让允许完成，避免中途被打断。
                 int brick_allowed=brick_owns(&brick) || (track_nav.phase==NAV_NORMAL &&
                     (raw_kind==TRACK_NONE || raw_kind==TRACK_UNKNOWN));
                 brick_update(&brick,&image[0][0],left_line,right_line,
                     track_nav.width,track_nav.learned,MT9V03X_H,MT9V03X_W,
                     now,speed_distance_counts,brick_allowed);
                 if(brick_owns(&brick)) {
+                    // 红砖接管期间冻结元素确认，以避障中线和有效标志替代普通导航路径。
                     // Freeze learned road width and element confirmation during a pass.
                     memset(&track_detector,0,sizeof track_detector);
                     for(int y=0;y<MT9V03X_H;++y)
@@ -434,12 +441,14 @@ int main(void)
                 now - track_nav.started_ms >= NAV_RING_EDGE_EXIT_MIN_MS &&
                 track_nav.ring_edge_turn_hint)
             {
+                // 仅在环内阶段且超过最短行驶时间后累计贴边提示；连续命中才触发出口转向。
                 if (ring_edge_turn_frames < NAV_RING_EDGE_EXIT_FRAMES)
                     ++ring_edge_turn_frames;
             }
             else ring_edge_turn_frames = 0;
             if (ring_edge_turn_frames >= NAV_RING_EDGE_EXIT_FRAMES)
             {
+                // 交由导航状态机切换出口阶段，不在此处直接改写图像边界。
                 track_nav_request_ring_exit(&track_nav, MT9V03X_H, MT9V03X_W, now);
                 ring_edge_turn_frames = 0;
             }
@@ -461,6 +470,7 @@ int main(void)
                  (round_pending || track_nav.phase != NAV_NORMAL ? SPEED_CURVE_TARGET : SPEED_STRAIGHT_TARGET));
             // 环岛补线暂时无效时仍按环岛限速继续运行，不因路径保持超时将速度清零。
             if(brick_owns(&brick) && speed_limit>BRICK_SPEED) speed_limit=BRICK_SPEED;
+            // 红砖补线未连续确认时禁止盲行；环岛短时丢线仍按环岛限速由导航状态机处理。
             if(brick.phase!=BRICK_IDLE && !brick.valid) speed_limit=0.0f;
             Speed_Plan_Update(mid_err, line_change,
                               speed_line_valid, speed_limit);
@@ -482,6 +492,7 @@ int main(void)
                 (int32_t)(track_nav.exit_turn_until_ms - now) > 0 &&
                 track_nav.exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES)
             {
+                // 出口视觉路径未连续稳定时暂按环岛方向转向，路径稳定后恢复视觉循迹。
                 // 出环短时按环岛方向转向，再恢复出口视觉循迹。
                 tmp_duty = servo_motor_duty_middle +
                     (track_nav.element == TRACK_ROUND_LEFT ? NAV_RING_EXIT_TURN_ANGLE : -NAV_RING_EXIT_TURN_ANGLE);

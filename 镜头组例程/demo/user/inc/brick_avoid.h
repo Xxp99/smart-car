@@ -26,6 +26,7 @@
 #define BRICK_SHIFT_RATE 60.0f // 每秒图像像素偏移量。
 
 typedef enum {BRICK_IDLE,BRICK_AVOID,BRICK_HOLD,BRICK_RECOVER,BRICK_FAULT} brick_phase_t;
+// 保存候选侧、确认/清空帧、避障偏移和故障原因，避免单帧检测直接改道。
 typedef struct {
     brick_phase_t phase;
     uint8_t side,candidate,hits,clear,valid,initialized;
@@ -62,6 +63,7 @@ static int brick_detect(const uint8_t *im,const uint8_t *l,const uint8_t *r,
                          const uint8_t *width,const uint8_t *learned,int h,int w,
                          int *top,int *bottom,int *inset)
 {
+    // 红砖按边线台阶和道路边界几何特征定位，不按颜色分类，降低光照变化的影响。
     int result=0;
     for(int side=1;side<=2;++side) {
         const uint8_t *edge=side==1?l:r,*outer=side==1?r:l;
@@ -105,6 +107,7 @@ static void brick_update(brick_t *s,const uint8_t *im,const uint8_t *l,const uin
                          const uint8_t *width,const uint8_t *learned,int h,int w,
                          uint32_t now,uint32_t distance,int allowed)
 {
+    // 状态机管理多帧确认、编码器清空距离与恢复；allowed=0 时不启动新的避让接管。
     if(!BRICK_ENABLE || !allowed) {memset(s,0,sizeof *s);return;}
     uint32_t dt=s->initialized?now-s->last_ms:0;
     s->last_ms=now;s->initialized=1;
@@ -190,6 +193,7 @@ static void brick_apply(brick_t *s,const uint8_t *im,const uint8_t *l,const uint
                         const uint8_t *width,const uint8_t *learned,uint8_t *mid,
                         uint8_t *valid,int h,int w)
 {
+    // 按障碍所在侧生成避障中线；近、远控制行均有效并连续确认后才允许继续行驶。
     if(s->phase==BRICK_IDLE) return;
     if(s->phase==BRICK_FAULT) {s->valid=0;s->reason=BRICK_FAILED;return;}
     int near=h*4/5,far=h*3/5;

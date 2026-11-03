@@ -188,6 +188,7 @@ static uint8_t zebra_row_valid(const uint8_t *l, const uint8_t *r,
 static void zebra_update(zebra_pass_t *s, uint8_t candidate, uint8_t path_valid,
                          uint8_t near_mid, uint8_t far_mid, uint32_t now)
 {
+    // candidate 必须同时满足斑马线图像特征和车道补线有效，避免仅凭条纹误接管。
     if (s->frame_initialized && (uint32_t)(now-s->last_frame_ms) >= ZEBRA_FRAME_GAP_MS)
     {
         s->hits = s->clear = s->previous_valid = 0;
@@ -246,6 +247,7 @@ static void zebra_update(zebra_pass_t *s, uint8_t candidate, uint8_t path_valid,
             s->steering_ready = 0;
         }
     }
+    // 恢复阶段依赖稳定清路证据退出，不等待旧的舵机更新标志，避免状态永久卡住。
     else if ((uint32_t)(now - s->phase_ms) >= ZEBRA_RECOVER_MS &&
              s->clear >= ZEBRA_CLEAR_FRAMES)
     {
@@ -320,6 +322,7 @@ typedef struct
 static void zebra_race_update(zebra_race_t *race, const zebra_pass_t *pass,
                               uint8_t candidate, uint32_t now, uint32_t distance_counts)
 {
+    // 起点斑马线先忽略；稳定清路后才布防，终点则需确认斑马线并走完清空距离后停车。
     if (race->phase == ZEBRA_RACE_STOP) return; // Reset/power-cycle is required to restart.
     if (!race->initialized)
     {

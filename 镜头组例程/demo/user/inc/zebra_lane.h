@@ -119,6 +119,7 @@ static void zebra_lane_build(zebra_lane_t *s,const uint8_t *image,
     }
     if(!image || !width || !learned || h<40u || w<60u) return;
     int first=(int)h/4;
+    // 优先使用已学习宽度；首次遇到斑马线时用图像宽度估计搜索两侧外边界。
     int prior=s->prior_ready && (uint32_t)(now-s->prior_ms)<=ZEBRA_LANE_PRIOR_MS;
     for(int y=first;y<(int)h;++y) {
         int calibrated=learned[y] && width[y]>=(int)w/10 && width[y]<=(int)w*9/10;
@@ -150,10 +151,12 @@ static void zebra_lane_build(zebra_lane_t *s,const uint8_t *image,
         if(center<1.0f || center>(float)w-2.0f) continue;
         mid[y]=(uint8_t)(center+0.5f);valid[y]=1;
         if(lane_width>=(int)w/10 && lane_width<=(int)w*9/10) {
+            // 保存验证过的逐行宽度供单边帧补线；纯投影结果不作为新的实测证据。
             s->prior_width[y]=(uint8_t)lane_width;
             s->prior_width_valid[y]=1;
         }
     }
+    // 舵机控制用的近、远两行都必须有有效中线，本帧才允许斑马线逻辑接管。
     s->current=(uint8_t)(valid[h*4/5] && valid[h*3/5]);
     if(s->current) {
         for(unsigned y=0;y<h;++y) {
