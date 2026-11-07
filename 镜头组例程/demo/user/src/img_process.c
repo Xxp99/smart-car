@@ -476,7 +476,27 @@ void track_element_observe(track_detector_t *state,const uint8_t *left,const uin
     } else {
         state->sequence_side=state->sequence_progress=0;
     }
-    track_element_update(state,candidate);
+    // 环岛采用最近3帧多数确认：边线瞬间掉点不会清空方向证据；反向候选会重置窗口。
+    uint8_t round_hit = candidate == TRACK_ROUND_LEFT || candidate == TRACK_ROUND_RIGHT;
+    if (round_hit && state->ring_side != candidate) {
+        state->ring_side = candidate;
+        state->ring_history = 0;
+    }
+    state->ring_history = (uint8_t)(((state->ring_history << 1) | round_hit) & 0x07u);
+    state->ring_votes = (uint8_t)((state->ring_history & 1u) +
+                                  ((state->ring_history >> 1) & 1u) +
+                                  ((state->ring_history >> 2) & 1u));
+    if (state->ring_votes >= 2u &&
+        (state->ring_side == TRACK_ROUND_LEFT || state->ring_side == TRACK_ROUND_RIGHT)) {
+        candidate = state->ring_side;
+        // 两帧同向证据满足环岛门槛；普通元素仍使用原来的连续确认逻辑。
+        state->candidate = candidate;
+        state->confirm_count = ROUND_CONFIRM_FRAMES;
+        state->confirmed = candidate;
+        state->release_count = 0;
+    } else {
+        track_element_update(state,candidate);
+    }
 }
 
 // Robust local bands replace the two exact-row requirement for telemetry only.

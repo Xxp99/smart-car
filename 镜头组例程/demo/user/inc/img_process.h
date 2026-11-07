@@ -17,10 +17,10 @@
 #define ROUND_ANCHOR_REQUIRED   (3)  // 上下各5行中至少3行恢复双边线
 #define ROUND_CORNER_MIN_DIV    (10) // 入口断点距边缘至少W/10，188列时为18像素
 #define ROUND_EXIT_CORNER_MIN_DIV (16) // 出口检测保持独立，不随入口收紧
-#define ROUND_OUTER_VISIBLE_PERCENT (70) // 参考边线检查区至少70%的行实际可见
-#define ROUND_OUTER_LOSS_MAX_DIV (20) // 每段出画最多H/20行，120行图像为6行
+#define ROUND_OUTER_VISIBLE_PERCENT (65) // 容忍边线提取抖动；两侧锚点与方向趋势仍须通过
+#define ROUND_OUTER_LOSS_MAX_DIV (15) // 单段短暂出画最多H/15行，120行图像为8行
 #define ROUND_OUTER_CLIP_MARGIN_DIV (12) // 缺口两端距对应画面边缘不超过W/12
-#define ROUND_CONFIRM_FRAMES     (3) // 环岛连续3帧同向确认，减少高速通过时的确认延迟
+#define ROUND_CONFIRM_FRAMES     (3) // 环岛3帧窗口内至少2帧同向，容忍单帧边线抖动
 #define ROUND_SEQUENCE_GAP_MS    (300u)
 #define ROUND_SEQUENCE_MAX_MS    (1500u)
 
