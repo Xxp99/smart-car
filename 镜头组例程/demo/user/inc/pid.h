@@ -5,11 +5,11 @@
 
 // 左右轮共用动态目标速度，单位：编码器计数/采样周期（不是RPM，也不是物理速度单位）。
 // 调参时需保持PIT采样周期与编码器计数尺度不变，或同步重新标定PI参数。
-#define SPEED_STRAIGHT_TARGET    (55.0f)  // 相比原50提高10%，单位为编码器计数/10ms
-#define SPEED_CURVE_TARGET       (52.0f)  // 弯道/环岛小幅提速，保留低于直道的余量
+#define SPEED_STRAIGHT_TARGET    (80.0f)  // 直道目标，单位为编码器计数/10ms
+#define SPEED_CURVE_TARGET       (75.0f)  // 弯道/环岛略低于直道，保留转向余量
 #define SPEED_BEND_START         (5.0f)   // 像素偏差不超过此值时使用直道速度
 #define SPEED_BEND_FULL          (30.0f)  // 达到此值时使用最低弯道速度
-#define SPEED_ACCEL_STEP         (0.50f)  // 每10ms目标速度增加量；缩短提速到目标值的时间
+#define SPEED_ACCEL_STEP         (0.80f)  // 每10ms目标速度增加量；逐步爬升至新目标
 #define SPEED_DECEL_STEP         (1.20f)  // 每10ms目标速度减少量
 #define SPEED_IMAGE_TIMEOUT_MS   (300)
 #define SPEED_SAMPLE_PERIOD_MS   (10)

@@ -6,7 +6,7 @@
 #ifndef BRICK_ENABLE
 #define BRICK_ENABLE 1
 #endif
-#define BRICK_SPEED 50.0f
+#define BRICK_SPEED 70.0f // 红砖避让阶段限速，单位为编码器计数/10ms
 #define BRICK_CONFIRM_FRAMES 3
 #define BRICK_CLEAR_FRAMES 5
 // 2026-11-01实测：前进1米对应的编码器计数。
