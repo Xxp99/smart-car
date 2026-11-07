@@ -968,7 +968,6 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         (nav->pending_ring == TRACK_ROUND_LEFT || nav->pending_ring == TRACK_ROUND_RIGHT)) {
         int pending_left = nav->pending_ring == TRACK_ROUND_LEFT;
         int far_open = pending_left ? far_left_open : far_right_open;
-        int near_open = pending_left ? left_open : right_open;
         nav->ring_far_open_rows = (uint8_t)far_open;
         if (now_ms - nav->ring_pending_ms >= NAV_RING_PENDING_TIMEOUT_MS) {
             nav->pending_ring = TRACK_NONE;
@@ -976,7 +975,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             nav->ring_far_open_rows = 0;
             nav->ring_far_open_frames = 0;
             nav->ring_pending_expired = 1;
-        } else if (far_open >= rows / 20 && near_open < rows / 20) {
+        } else if (far_open >= rows / 20) {
             if (nav->ring_far_open_frames < NAV_RING_FAR_OPEN_CONFIRM_FRAMES)
                 ++nav->ring_far_open_frames;
             if (nav->ring_far_open_frames >= NAV_RING_FAR_OPEN_CONFIRM_FRAMES) {
@@ -995,7 +994,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav->ring_far_open_frames = 0;
     }
 
-    // 十字保持原有即时接管；环岛只有远区入口开口出现且近区B口尚未到达时才进APPROACH。
+    // 十字保持原有即时接管；环岛须由同侧远区开口连续确认后才进APPROACH。
     if (nav->phase == NAV_NORMAL && start_element != TRACK_NONE &&
         start_element != TRACK_UNKNOWN) {
         nav->element = start_element;
