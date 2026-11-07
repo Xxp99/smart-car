@@ -607,6 +607,7 @@ void track_nav_request_ring_exit(track_nav_t *nav, uint8_t rows, uint8_t cols, u
 {
     if (!nav || rows == 0 || cols == 0 ||
         (nav->element != TRACK_ROUND_LEFT && nav->element != TRACK_ROUND_RIGHT) ||
+        nav->ring_turn_count != 1u ||
         !(nav->phase == NAV_INSIDE ||
           (nav->phase == NAV_SLOW && nav->slow_resume_phase == NAV_INSIDE)))
         return;
@@ -614,6 +615,8 @@ void track_nav_request_ring_exit(track_nav_t *nav, uint8_t rows, uint8_t cols, u
     nav->exit_anchor = nav->last_mid[rows * 4 / 5];
     if (nav->exit_anchor == 0 || nav->exit_anchor >= cols - 1)
         nav->exit_anchor = cols / 2;
+    // 贴边证据只能发起环岛的第二次同向转弯，不能绕过首转确认。
+    nav->ring_turn_count = 2u;
     nav_stage(nav, NAV_EXIT, now_ms);
 }
 
@@ -915,6 +918,8 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         detector->confirmed != TRACK_UNKNOWN)
     {
         nav->element = detector->confirmed;
+        nav->ring_turn_count = (nav->element == TRACK_ROUND_LEFT ||
+                                nav->element == TRACK_ROUND_RIGHT) ? 0u : nav->ring_turn_count;
         nav->entry_pending = ring_confirmed;
         nav->exit_guide_valid = 0;
         nav->started_ms = now_ms;
@@ -971,10 +976,10 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav->straight_frames>=NAV_RING_EXIT_STRAIGHT_FRAMES &&
         detector->confirmed==TRACK_NONE &&
         (detector->candidate==TRACK_NONE || detector->candidate==TRACK_UNKNOWN));
-    // 环内出口同时参考开口+远端道路或持续直路后备证据，避免瞬时开口结束环岛。
+    // 第二次同向转弯必须有真实出口开口和远端道路支撑；仅连续直路不能结束环岛。
     int ring_exit_feature = ring_path_phase == NAV_INSIDE &&
-        ((outer_open >= rows / 20 && both_open == 0 && exit_evidence) ||
-         nav->exit_straight_fallback);
+        nav->ring_turn_count == 1u && outer_open >= rows / 20 &&
+        both_open == 0 && exit_evidence;
     if (ring_path_phase == NAV_INSIDE)
     {
         // 证据短暂消失时只递减一帧，防抖；须累计8帧才接受出口。
@@ -1000,11 +1005,17 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav_stage(nav, NAV_ENTER, now_ms);
     else if (nav->phase == NAV_ENTER && elapsed >= NAV_STAGE_MIN_MS &&
              nav->feature_frames >= NAV_FEATURE_FRAMES)
+    {
+        // 入环转向确认完成后记为第一次同向转弯；只有其后的出口岔路可发起第二次转向。
+        if (ring_nav) nav->ring_turn_count = 1u;
         nav_stage(nav, NAV_INSIDE, now_ms);
+    }
     else if (nav->phase == NAV_INSIDE && elapsed >= NAV_INSIDE_MIN_MS &&
              nav->exit_confirm_frames >= NAV_RING_EXIT_CONFIRM_FRAMES)
     {
         nav->exit_anchor = nav->last_mid[rows - 1];
+        // 出口开口及远端道路证据通过后，启动第二次、方向仍由已锁定环岛侧决定。
+        if (ring_nav && nav->ring_turn_count == 1u) nav->ring_turn_count = 2u;
         nav_stage(nav, NAV_EXIT, now_ms);
     }
     else if (nav->phase == NAV_SLOW && ring_nav && ring_path_phase == NAV_INSIDE &&
@@ -1013,9 +1024,11 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     {
         // 丢线后重获可靠出口证据，按原环岛状态进入出口阶段，不清除环岛方向。
         nav->exit_anchor = nav->last_mid[rows - 1];
+        if (ring_nav && nav->ring_turn_count == 1u) nav->ring_turn_count = 2u;
         nav_stage(nav, NAV_EXIT, now_ms);
     }
-    else if (nav->phase == NAV_EXIT && elapsed >= NAV_RING_EXIT_MIN_MS &&
+    else if (nav->phase == NAV_EXIT && nav->ring_turn_count >= 2u &&
+             elapsed >= NAV_RING_EXIT_MIN_MS &&
              nav->exit_path_frames >= NAV_RING_EXIT_STRAIGHT_FRAMES)
         nav_stage(nav, NAV_RECOVER, now_ms);
     else if (nav->phase == NAV_CROSS && elapsed >= NAV_STAGE_MIN_MS &&
@@ -1023,7 +1036,9 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         nav_stage(nav, NAV_RECOVER, now_ms);
     else if ((nav->phase == NAV_RECOVER || nav->phase == NAV_SLOW) &&
              elapsed >= (ring_nav ? NAV_RING_RECOVER_MS : NAV_RECOVER_MS) &&
-             (ring_nav ? nav->exit_path_frames >= NAV_RING_EXIT_STRAIGHT_FRAMES :
+             (ring_nav ? (nav->ring_turn_count >= 2u &&
+                          nav->exit_path_frames >= NAV_RING_EXIT_STRAIGHT_FRAMES &&
+                          (int32_t)(now_ms-nav->exit_turn_until_ms) >= 0) :
                          nav->straight_frames >= NAV_EXIT_STRAIGHT_FRAMES) &&
              detector->confirmed == TRACK_NONE &&
              (!ring_nav || (nav->phase == NAV_RECOVER || nav->slow_resume_phase == NAV_EXIT)))

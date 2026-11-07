@@ -494,13 +494,15 @@ int main(void)
 #endif
             if (!stopped &&
                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
-                (track_nav.phase == NAV_EXIT ||
-                 (track_nav.phase == NAV_SLOW && track_nav.slow_resume_phase == NAV_EXIT)) &&
-                (int32_t)(track_nav.exit_turn_until_ms - now) > 0 &&
-                track_nav.exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES)
+                track_nav.ring_turn_count >= 2u &&
+                (track_nav.phase == NAV_EXIT || track_nav.phase == NAV_RECOVER ||
+                 (track_nav.phase == NAV_SLOW &&
+                  (track_nav.slow_resume_phase == NAV_EXIT ||
+                   track_nav.slow_resume_phase == NAV_RECOVER))) &&
+                (track_nav.exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES ||
+                 (int32_t)(now-track_nav.exit_turn_until_ms) < 0))
             {
-                // 出口视觉路径未连续稳定时暂按环岛方向转向，路径稳定后恢复视觉循迹。
-                // 出环短时按环岛方向转向，再恢复出口视觉循迹。
+                // 第二次同向转弯至少保持2秒，并持续到近远出口路径均连续有效；再恢复视觉循迹。
                 tmp_duty = servo_motor_duty_middle +
                     (track_nav.element == TRACK_ROUND_LEFT ? NAV_RING_EXIT_TURN_ANGLE : -NAV_RING_EXIT_TURN_ANGLE);
                 tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
@@ -532,12 +534,13 @@ int main(void)
             char nav_extra[448];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u rt=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
                 (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
                 (unsigned)track_nav.straight_frames,(unsigned)track_nav.exit_straight_fallback,
                 (unsigned long)(now-track_nav.stage_ms),(unsigned)track_nav.slow_resume_phase,
+                (unsigned)track_nav.ring_turn_count,
                 (unsigned)vl->lost,(unsigned)vl->monotonic,
                 (unsigned)vl->a.valid,(unsigned)vl->a.x,(unsigned)vl->a.y,
                 (unsigned)vl->b.valid,(unsigned)vl->b.x,(unsigned)vl->b.y,
