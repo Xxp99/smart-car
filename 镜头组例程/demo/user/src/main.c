@@ -328,7 +328,7 @@ int main(void)
             // 先检测斑马线，再尝试重建可用中线。原始图像命中但补线无效时，不能接管方向。
             uint8_t zebra_raw_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
             if (zebra_raw_candidate || zebra.phase != ZEBRA_NORMAL ||
-                zebra_race.phase == ZEBRA_RACE_PASS || zebra_race.phase == ZEBRA_RACE_CLEAR)
+                zebra_race.phase == ZEBRA_RACE_ALIGN)
                 zebra_lane_build(&zebra_lane, &image[0][0], track_nav.width,
                     track_nav.learned, control_mid, track_nav.path_valid,
                     MT9V03X_H, MT9V03X_W, control_time_ms);
@@ -364,12 +364,13 @@ int main(void)
                 zebra_row_valid(left_line, right_line, stripe_row, far_row, MT9V03X_W);
             zebra_update(&zebra, zebra_candidate, path_recovered,
                          mid_line[near_row], mid_line[far_row], now);
-            zebra_race_update(&zebra_race, &zebra, zebra_candidate, now, speed_distance_counts);
+            zebra_race_update(&zebra_race, &zebra, zebra_candidate,
+                              &image[0][0], MT9V03X_H, MT9V03X_W, now,
+                              speed_distance_counts);
             uint8_t stopped = zebra_race.phase == ZEBRA_RACE_STOP;
             if (stopped) Speed_Stop_Latch(); // 下一次10ms中断清零两轮PWM及PI积分。
             // 连续3帧且车道重建有效后才确认；通过时按重建中线循迹。
-            uint8_t finishing = zebra_race.phase == ZEBRA_RACE_PASS ||
-                                zebra_race.phase == ZEBRA_RACE_CLEAR;
+            uint8_t finishing = zebra_race.phase == ZEBRA_RACE_ALIGN;
             uint8_t passing = zebra_slow(&zebra, zebra_candidate) || finishing;
 #else
             uint8_t path_recovered = 0, stopped = 0, finishing = 0, passing = 0;
@@ -517,6 +518,14 @@ int main(void)
             if (stopped) tmp_duty = ZEBRA_STRAIGHT_ANGLE;
             tmp_duty = brick_steering(&brick_servo, tmp_duty, brick_owns(&brick),
                 brick.valid, now, servo_motor_duty_middle);
+            /* 第二次见到斑马线后，以黑条在图像中的主方向闭环微调；
+             * 对齐后锁存停车，覆盖环岛、砖块和普通循迹的舵机命令。 */
+            if (zebra_race.phase == ZEBRA_RACE_ALIGN)
+                tmp_duty = zebra_align_steering(&zebra_race, servo_motor_duty_middle,
+                    last_servo_angle, SERVO_DIR);
+            tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+            tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+            if (stopped) tmp_duty = servo_motor_duty_middle;
             last_servo_angle = tmp_duty;
             pwm_set_duty(SERVO_MOTOR_PWM, SERVO_MOTOR_DUTY(tmp_duty));
 
