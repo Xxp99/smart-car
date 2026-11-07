@@ -66,7 +66,7 @@ const char *track_element_name(track_element_t element);
 #define NAV_STAGE_MIN_MS         (150u)
 #define NAV_RING_ENTRY_MIN_MS    (600u) // 首次转向至少持续此时间，避免轻微摆动就记为已入环
 #define NAV_RING_PENDING_TIMEOUT_MS (8000u) // 识别到环岛但尚未看到远口时，等待同侧远区开口
-#define NAV_RING_FAR_OPEN_CONFIRM_FRAMES (3u) // 远区开口连续确认，过滤B点单帧缺线
+#define NAV_RING_FAR_OPEN_CONFIRM_FRAMES (5u) // 远区开口连续确认，过滤短时边线缺失
 #define NAV_RING_ENTRY_PATH_HOLD_MS (800u) // 入环阶段短时丢线时沿用上一帧弧线路径
 #define NAV_RING_EXIT_MIN_MS     (400u)
 #define NAV_RING_EDGE_EXIT_MIN_MS (6000u) // 环岛确认后达到此时间，才允许贴边补线触发出口转向
