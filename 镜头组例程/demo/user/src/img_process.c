@@ -609,10 +609,6 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
         nav->slow_resume_phase=NAV_NORMAL;
     }
     nav->stage_ms = now;
-    if (phase == NAV_ENTER &&
-        (nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT))
-        nav->entry_turn_until_ms = now + NAV_RING_ENTRY_TURN_MS;
-    if (phase == NAV_NORMAL) nav->entry_turn_until_ms = 0;
     if (phase == NAV_EXIT &&
         !(previous_phase == NAV_SLOW && nav->slow_resume_phase == NAV_EXIT) &&
         (nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT)) {
@@ -893,6 +889,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
 
     int near = rows * 4 / 5, far = rows * 3 / 5;
     int left_open = 0, right_open = 0, both_open = 0;
+    int far_left_open = 0, far_right_open = 0;
     int full = nav_pair(raw_left[near], raw_right[near], cols) &&
                nav_pair(raw_left[far], raw_right[far], cols);
     int near_mid = ((int)raw_left[near] + raw_right[near]) / 2;
@@ -911,6 +908,13 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             int width = right[y] - left[y];
             nav->width[y] = nav->learned[y] ? (3 * nav->width[y] + width + 2) / 4 : width;
             nav->learned[y] = 1;
+        }
+        if (y >= rows / 4 && y < rows * 2 / 3)
+        {
+            far_left_open += left[y] <= ROUND_EDGE_MARGIN && right[y] > ROUND_EDGE_MARGIN &&
+                             right[y] < cols - 1 - ROUND_EDGE_MARGIN;
+            far_right_open += right[y] >= cols - 1 - ROUND_EDGE_MARGIN && left[y] > ROUND_EDGE_MARGIN &&
+                              left[y] < cols - 1 - ROUND_EDGE_MARGIN;
         }
         if (y >= rows * 2 / 3 && y < rows * 9 / 10)
         {
@@ -937,14 +941,68 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         if(round_outer_visible(outer[near],cols) && round_outer_visible(outer[far],cols))
             nav_stage(nav,NAV_APPROACH,now_ms);
     }
-    // 普通循迹只在元素确认后切入特殊阶段；宽度未学习时进入SLOW等待，不用猜测宽度强行补线。
-    if (nav->phase == NAV_NORMAL && detector->confirmed != TRACK_NONE &&
-        detector->confirmed != TRACK_UNKNOWN)
-    {
-        nav->element = detector->confirmed;
+    // 初次识别只锁存方向，继续普通循迹经过B点；远区同侧开口连续确认后才启动环岛导航。
+    track_element_t start_element = detector->confirmed;
+    int confirmed_ring = detector->confirmed == TRACK_ROUND_LEFT ||
+                         detector->confirmed == TRACK_ROUND_RIGHT;
+    if (nav->phase == NAV_NORMAL && confirmed_ring) {
+        start_element = TRACK_NONE;
+        if (!nav->ring_pending_expired && nav->pending_ring != detector->confirmed) {
+            nav->pending_ring = detector->confirmed;
+            nav->ring_pending_ms = now_ms;
+            nav->ring_far_open_frames = 0;
+        }
+    } else if (nav->phase == NAV_NORMAL) {
+        if (detector->confirmed == TRACK_CROSS) {
+            nav->pending_ring = TRACK_NONE;
+            nav->ring_pending_ms = 0;
+            nav->ring_far_open_frames = 0;
+            nav->ring_pending_expired = 0;
+        } else if (nav->ring_pending_expired) {
+            // 必须先离开上一轮环岛确认，再接受新的同向候选。
+            nav->ring_pending_expired = 0;
+        }
+    }
+
+    if (nav->phase == NAV_NORMAL &&
+        (nav->pending_ring == TRACK_ROUND_LEFT || nav->pending_ring == TRACK_ROUND_RIGHT)) {
+        int pending_left = nav->pending_ring == TRACK_ROUND_LEFT;
+        int far_open = pending_left ? far_left_open : far_right_open;
+        int near_open = pending_left ? left_open : right_open;
+        nav->ring_far_open_rows = (uint8_t)far_open;
+        if (now_ms - nav->ring_pending_ms >= NAV_RING_PENDING_TIMEOUT_MS) {
+            nav->pending_ring = TRACK_NONE;
+            nav->ring_pending_ms = 0;
+            nav->ring_far_open_rows = 0;
+            nav->ring_far_open_frames = 0;
+            nav->ring_pending_expired = 1;
+        } else if (far_open >= rows / 20 && near_open < rows / 20) {
+            if (nav->ring_far_open_frames < NAV_RING_FAR_OPEN_CONFIRM_FRAMES)
+                ++nav->ring_far_open_frames;
+            if (nav->ring_far_open_frames >= NAV_RING_FAR_OPEN_CONFIRM_FRAMES) {
+                start_element = nav->pending_ring;
+                nav->pending_ring = TRACK_NONE;
+                nav->ring_pending_ms = 0;
+                nav->ring_far_open_frames = 0;
+                nav->ring_pending_expired = 0;
+            } else start_element = TRACK_NONE;
+        } else {
+            nav->ring_far_open_frames = 0;
+            start_element = TRACK_NONE;
+        }
+    } else {
+        nav->ring_far_open_rows = 0;
+        nav->ring_far_open_frames = 0;
+    }
+
+    // 十字保持原有即时接管；环岛只有远区入口开口出现且近区B口尚未到达时才进APPROACH。
+    if (nav->phase == NAV_NORMAL && start_element != TRACK_NONE &&
+        start_element != TRACK_UNKNOWN) {
+        nav->element = start_element;
         nav->ring_turn_count = (nav->element == TRACK_ROUND_LEFT ||
                                 nav->element == TRACK_ROUND_RIGHT) ? 0u : nav->ring_turn_count;
-        nav->entry_pending = ring_confirmed;
+        nav->entry_pending = ring_confirmed || nav->element == TRACK_ROUND_LEFT ||
+                             nav->element == TRACK_ROUND_RIGHT;
         nav->exit_guide_valid = 0;
         nav->started_ms = now_ms;
         nav->fault = !nav->learned[near] || !nav->learned[far] ? NAV_FAULT_WIDTH : NAV_FAULT_NONE;

@@ -387,6 +387,10 @@ int main(void)
                 track_nav.apex_hits = 0;
                 track_nav.phase = NAV_NORMAL;
                 track_nav.element = TRACK_NONE;
+                track_nav.pending_ring = TRACK_NONE;
+                track_nav.ring_pending_ms = 0;
+                track_nav.ring_far_open_frames = 0;
+                track_nav.ring_pending_expired = 0;
                 track_nav.fault = NAV_FAULT_NONE;
                 memset(&track_nav.vision,0,sizeof track_nav.vision);
                 track_nav.feature_frames = track_nav.straight_frames = 0;
@@ -496,23 +500,6 @@ int main(void)
                 zebra_lane.current, passing && !stopped,
                 now, last_servo_angle, servo_motor_duty_middle);
 #endif
-            uint8_t ring_entry_turn_active = !stopped &&
-                (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
-                track_nav.ring_turn_count <= 1u &&
-                (track_nav.phase == NAV_ENTER || track_nav.phase == NAV_INSIDE ||
-                 (track_nav.phase == NAV_SLOW &&
-                  (track_nav.slow_resume_phase == NAV_ENTER ||
-                   track_nav.slow_resume_phase == NAV_INSIDE))) &&
-                (int32_t)(now-track_nav.entry_turn_until_ms) < 0;
-            if (ring_entry_turn_active)
-            {
-                // 首次转向未完成前保持环岛侧方向；短时丢线路径不把舵机拉回直行。
-                tmp_duty = servo_motor_duty_middle +
-                    (track_nav.element == TRACK_ROUND_LEFT ? NAV_RING_ENTRY_TURN_ANGLE : -NAV_RING_ENTRY_TURN_ANGLE);
-                tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
-                tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
-                track_nav.entry_guide = 3;
-            }
             if (!stopped &&
                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
                 track_nav.ring_turn_count >= 2u &&
@@ -555,8 +542,8 @@ int main(void)
             char nav_extra[448];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u rt=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
-                (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
+                " F=%u rw=%u fo=%u ff=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u rt=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
+                (unsigned)track_nav.fault,(unsigned)track_nav.pending_ring,(unsigned)track_nav.ring_far_open_rows,(unsigned)track_nav.ring_far_open_frames,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
                 (unsigned)track_nav.straight_frames,(unsigned)track_nav.exit_straight_fallback,
