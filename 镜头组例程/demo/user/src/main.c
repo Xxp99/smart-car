@@ -472,13 +472,14 @@ int main(void)
             // 环岛候选先减速，最近5帧同侧命中3次确认；接管及恢复继续限速。
             uint8_t round_pending = track_detector.candidate == TRACK_ROUND_LEFT ||
                                     track_detector.candidate == TRACK_ROUND_RIGHT;
+            uint8_t ring_speed_mode = round_pending ||
+                (track_nav.phase != NAV_NORMAL &&
+                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT));
             float speed_limit = stopped ? 0.0f :
-                (passing ? ZEBRA_PASS_SPEED :
-                 (round_pending || track_nav.phase != NAV_NORMAL ? SPEED_CURVE_TARGET : SPEED_STRAIGHT_TARGET));
+                (ring_speed_mode ? SPEED_RING_TARGET :
+                 (passing ? ZEBRA_PASS_SPEED : SPEED_STRAIGHT_TARGET));
             // 环岛补线暂时无效时仍按环岛限速继续运行，不因路径保持超时将速度清零。
             if(brick_owns(&brick) && speed_limit>BRICK_SPEED) speed_limit=BRICK_SPEED;
-            // 红砖补线未连续确认时禁止盲行；环岛短时丢线仍按环岛限速由导航状态机处理。
-            if(brick.phase!=BRICK_IDLE && !brick.valid) speed_limit=0.0f;
             Speed_Plan_Update(mid_err, line_change,
                               speed_line_valid, speed_limit);
 

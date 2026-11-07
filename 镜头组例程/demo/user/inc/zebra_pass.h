@@ -8,7 +8,7 @@
 #define ZEBRA_STRAIGHT_MAX_MS    1500u
 #define ZEBRA_RECOVER_MS          300u
 #define ZEBRA_STABLE_PIXELS         4
-#define ZEBRA_PASS_SPEED          45.0f
+#define ZEBRA_PASS_SPEED         150.0f
 #define ZEBRA_STRAIGHT_ANGLE      90.0f
 #define ZEBRA_EXIT_DEG_PER_SEC    20.0f
 #define ZEBRA_EXIT_MAX_STEP_MS      50u
