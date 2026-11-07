@@ -8,6 +8,7 @@
 #define SPEED_STRAIGHT_TARGET    (150.0f)
 #define SPEED_CURVE_TARGET       (150.0f)  // 非环岛弯道目标速度
 #define SPEED_RING_TARGET        (50.0f)   // 环岛速度保持回退基线值
+#define SPEED_PATH_LOST_TARGET   (50.0f)   // 路径无效时低速继续，不以150盲行
 #define SPEED_BEND_START         (5.0f)   // 像素偏差不超过此值时使用直道速度
 #define SPEED_BEND_FULL          (30.0f)  // 达到此值时使用最低弯道速度
 #define SPEED_ACCEL_STEP         (0.40f)  // 每10ms目标速度增加量

@@ -480,6 +480,9 @@ int main(void)
                  (passing ? ZEBRA_PASS_SPEED : SPEED_STRAIGHT_TARGET));
             // 环岛补线暂时无效时仍按环岛限速继续运行，不因路径保持超时将速度清零。
             if(brick_owns(&brick) && speed_limit>BRICK_SPEED) speed_limit=BRICK_SPEED;
+            // 路径无效仍保持非零速度，但限制在低速，避免沿旧路径以高速盲行。
+            if (!speed_line_valid && !stopped && speed_limit>SPEED_PATH_LOST_TARGET)
+                speed_limit=SPEED_PATH_LOST_TARGET;
             Speed_Plan_Update(mid_err, line_change,
                               speed_line_valid, speed_limit);
 
@@ -501,7 +504,9 @@ int main(void)
                   (track_nav.slow_resume_phase == NAV_EXIT ||
                    track_nav.slow_resume_phase == NAV_RECOVER))) &&
                 (track_nav.exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES ||
-                 (int32_t)(now-track_nav.exit_turn_until_ms) < 0))
+                 (int32_t)(now-track_nav.exit_turn_until_ms) < 0) &&
+                (int32_t)(now-(track_nav.exit_turn_until_ms +
+                    NAV_RING_EXIT_TURN_MAX_MS - NAV_RING_EXIT_TURN_MS)) < 0)
             {
                 // 第二次同向转弯至少保持2秒，并持续到近远出口路径均连续有效；再恢复视觉循迹。
                 tmp_duty = servo_motor_duty_middle +

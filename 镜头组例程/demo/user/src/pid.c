@@ -3,10 +3,11 @@
 // 电机PI初始参数：保持原有每10ms调用、t=1的离散周期约定。
 // Ki=0.5 是待实车验证的起始值，不能直接按秒制PID参数使用。
 float speed_KP = 50, speed_KI = 0.5f,speed_KD = 0.0, speed_IMAX = 5000.0, speed_OUTMAX = 5000.0;
-volatile float speed_target = SPEED_STRAIGHT_TARGET;
+// 等待主循环拿到第一帧有效图像后再申请行驶速度。
+volatile float speed_target = 0.0f;
 volatile uint32 control_time_ms = 0;
 volatile uint32 speed_distance_counts = 0;
-static volatile float speed_requested = SPEED_STRAIGHT_TARGET;
+static volatile float speed_requested = 0.0f;
 static volatile uint8 speed_stop_latched = 0;
 float speed_real = 0.0;
 float speed_pwm = 0.0;
