@@ -609,6 +609,10 @@ static void nav_stage(track_nav_t *nav, track_nav_phase_t phase, uint32_t now)
         nav->slow_resume_phase=NAV_NORMAL;
     }
     nav->stage_ms = now;
+    if (phase == NAV_ENTER &&
+        (nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT))
+        nav->entry_turn_until_ms = now + NAV_RING_ENTRY_TURN_MS;
+    if (phase == NAV_NORMAL) nav->entry_turn_until_ms = 0;
     if (phase == NAV_EXIT &&
         !(previous_phase == NAV_SLOW && nav->slow_resume_phase == NAV_EXIT) &&
         (nav->element == TRACK_ROUND_LEFT || nav->element == TRACK_ROUND_RIGHT)) {
@@ -847,7 +851,7 @@ static int nav_entry_turn(const uint8_t *left, const uint8_t *right,
            !nav_pair(left[far+k],right[far+k],cols)) return 0;
         delta+=(int)left[near+k]+right[near+k]-left[far+k]-right[far+k];
     }
-    return (is_left?delta:-delta)>=10*(cols/32);
+    return (is_left?delta:-delta)>=16*(cols/32);
 }
 
 // Seed missing row widths only from current real, consecutive boundary pairs.
@@ -1023,7 +1027,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     uint32_t elapsed = now_ms - nav->stage_ms;
     if (nav->phase == NAV_APPROACH && nav->feature_frames >= NAV_FEATURE_FRAMES)
         nav_stage(nav, NAV_ENTER, now_ms);
-    else if (nav->phase == NAV_ENTER && elapsed >= NAV_STAGE_MIN_MS &&
+    else if (nav->phase == NAV_ENTER && elapsed >= NAV_RING_ENTRY_MIN_MS &&
              nav->feature_frames >= NAV_FEATURE_FRAMES)
     {
         // 入环转向确认完成后记为第一次同向转弯；只有其后的出口岔路可发起第二次转向。
@@ -1107,7 +1111,8 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     nav->entry_guided_rows=0;
     nav->exit_reject_rows=0;
     uint32_t path_hold_ms=(ring_path_phase==NAV_INSIDE || ring_path_phase==NAV_EXIT) ?
-                          NAV_INSIDE_HOLD_MS : NAV_HOLD_MS;
+                          NAV_INSIDE_HOLD_MS :
+                          (ring_path_phase==NAV_ENTER ? NAV_RING_ENTRY_PATH_HOLD_MS : NAV_HOLD_MS);
     // 逐行生成控制补线：每个候选中心都须落在可行驶白区，边线识别数组保持原始值。
     for (int y = rows / 4; y < rows; ++y)
     {

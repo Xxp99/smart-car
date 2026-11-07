@@ -64,6 +64,10 @@ const char *track_element_name(track_element_t element);
 #define NAV_RING_EXIT_STRAIGHT_FRAMES (12) // 环岛出口与恢复阶段要求近远路径连续有效
 #define NAV_RING_STRAIGHT_EXIT_MIN_MS (1200u) // 备用直线出口证据需在环内持续运行后才启用
 #define NAV_STAGE_MIN_MS         (150u)
+#define NAV_RING_ENTRY_MIN_MS    (600u) // 首次转向至少持续此时间，避免轻微摆动就记为已入环
+#define NAV_RING_ENTRY_TURN_MS   (1500u) // 入环转向方向保持上限；视觉确认后仍完成短暂转向
+#define NAV_RING_ENTRY_TURN_ANGLE (12.0f) // 入环转向角小于出环角，避免骤打到舵机限位
+#define NAV_RING_ENTRY_PATH_HOLD_MS (800u) // 入环阶段短时丢线时沿用上一帧弧线路径
 #define NAV_RING_EXIT_MIN_MS     (400u)
 #define NAV_RING_EDGE_EXIT_MIN_MS (6000u) // 环岛确认后达到此时间，才允许贴边补线触发出口转向
 #define NAV_RING_EDGE_EXIT_FRAMES (3u)    // 控制路径连续贴边帧数
@@ -120,14 +124,14 @@ typedef struct
     track_nav_fault_t fault;
     ring_vision_t vision;
     track_element_t element;
-    uint32_t started_ms, stage_ms, last_path_ms, apex_ms, exit_turn_until_ms;
+    uint32_t started_ms, stage_ms, last_path_ms, apex_ms, exit_turn_until_ms, entry_turn_until_ms;
     uint8_t feature_frames, straight_frames, exit_confirm_frames, exit_path_frames;
     uint8_t ring_turn_count; // 环岛同向转弯进度：0未入环转弯，1首转完成，2出环第二转已启动
     uint8_t exit_anchor, guide_valid, drive_valid, entry_pending;
     uint8_t exit_guide_row, exit_guide_center, exit_guide_valid;
     uint8_t exit_evidence, exit_straight_fallback, ring_edge_turn_hint;
     int16_t exit_guide_slope;
-    uint8_t entry_guide; // 当前近控制行：0参考边回退，1开口引导，2真实岛边
+    uint8_t entry_guide; // 0参考边回退，1开口引导，2真实岛边，3入口方向保持转向
     uint8_t entry_gap_valid, entry_gap_rows, entry_edge_rows, entry_guided_rows;
     uint8_t exit_reject_rows;
     uint8_t apex_valid, apex_x, apex_y, apex_hits, apex_prev_x, apex_prev_y;

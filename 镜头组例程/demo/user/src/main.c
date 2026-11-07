@@ -469,7 +469,7 @@ int main(void)
                 (track_nav.path_valid[near_row] && track_nav.path_valid[far_row]));
             if (passing && zebra_lane.current)
                 mid_err -= 0.25f * line_change;
-            // 环岛候选先减速，最近5帧同侧命中3次确认；接管及恢复继续限速。
+            // 环岛候选和导航阶段使用专用目标速度；此处不改变速度规划参数。
             uint8_t round_pending = track_detector.candidate == TRACK_ROUND_LEFT ||
                                     track_detector.candidate == TRACK_ROUND_RIGHT;
             uint8_t ring_active = round_pending ||
@@ -496,6 +496,23 @@ int main(void)
                 zebra_lane.current, passing && !stopped,
                 now, last_servo_angle, servo_motor_duty_middle);
 #endif
+            uint8_t ring_entry_turn_active = !stopped &&
+                (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
+                track_nav.ring_turn_count <= 1u &&
+                (track_nav.phase == NAV_ENTER || track_nav.phase == NAV_INSIDE ||
+                 (track_nav.phase == NAV_SLOW &&
+                  (track_nav.slow_resume_phase == NAV_ENTER ||
+                   track_nav.slow_resume_phase == NAV_INSIDE))) &&
+                (int32_t)(now-track_nav.entry_turn_until_ms) < 0;
+            if (ring_entry_turn_active)
+            {
+                // 首次转向未完成前保持环岛侧方向；短时丢线路径不把舵机拉回直行。
+                tmp_duty = servo_motor_duty_middle +
+                    (track_nav.element == TRACK_ROUND_LEFT ? NAV_RING_ENTRY_TURN_ANGLE : -NAV_RING_ENTRY_TURN_ANGLE);
+                tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+                tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+                track_nav.entry_guide = 3;
+            }
             if (!stopped &&
                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
                 track_nav.ring_turn_count >= 2u &&
