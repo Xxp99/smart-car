@@ -7,7 +7,6 @@ volatile float speed_target = SPEED_STRAIGHT_TARGET;
 volatile uint32 control_time_ms = 0;
 volatile uint32 speed_distance_counts = 0;
 static volatile float speed_requested = SPEED_STRAIGHT_TARGET;
-static volatile uint16 speed_image_age = SPEED_IMAGE_TIMEOUT_MS / SPEED_SAMPLE_PERIOD_MS;
 static volatile uint8 speed_stop_latched = 0;
 float speed_real = 0.0;
 float speed_pwm = 0.0;
@@ -26,7 +25,6 @@ void Speed_Plan_Update(float near_error, float line_change, uint8 valid, float s
     float planned = valid ? SPEED_STRAIGHT_TARGET -
         ratio * (SPEED_STRAIGHT_TARGET - SPEED_CURVE_TARGET) : SPEED_CURVE_TARGET;
     speed_requested = MIN(planned, constrain_float(speed_limit, 0.0f, SPEED_STRAIGHT_TARGET));
-    speed_image_age = 0;
 }
 
 // 用真实反馈累计位移，不以目标速度或经过时间替代车辆移动。
@@ -47,15 +45,10 @@ void Speed_Stop_Latch(void)
 // 目标速度的变化率由固定采样周期决定，不随摄像头帧率变化。
 void Speed_Target_Tick(void)
 {
-    // 固定10ms调用：图像超时或停车锁存时目标归零，否则按加减速步长平滑跟随。
+    // 固定10ms调用：仅终点停车锁存时目标归零，否则按加减速步长平滑跟随。
     float requested;
     control_time_ms += SPEED_SAMPLE_PERIOD_MS;
-    if (speed_image_age < SPEED_IMAGE_TIMEOUT_MS / SPEED_SAMPLE_PERIOD_MS)
-    {
-        ++speed_image_age;
-    }
-    requested = speed_stop_latched || speed_image_age >= SPEED_IMAGE_TIMEOUT_MS / SPEED_SAMPLE_PERIOD_MS ?
-        0.0f : speed_requested;
+    requested = speed_stop_latched ? 0.0f : speed_requested;
     if (requested <= 0.0f)
     {
         speed_target = 0.0f;
