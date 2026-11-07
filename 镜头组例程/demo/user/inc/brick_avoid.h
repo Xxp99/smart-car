@@ -6,7 +6,7 @@
 #ifndef BRICK_ENABLE
 #define BRICK_ENABLE 1
 #endif
-#define BRICK_SPEED 150.0f
+#define BRICK_SPEED 125.0f
 #define BRICK_CONFIRM_FRAMES 3
 #define BRICK_CLEAR_FRAMES 5
 // 2026-11-01实测：前进1米对应的编码器计数。
