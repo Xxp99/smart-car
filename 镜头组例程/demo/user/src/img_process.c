@@ -476,27 +476,7 @@ void track_element_observe(track_detector_t *state,const uint8_t *left,const uin
     } else {
         state->sequence_side=state->sequence_progress=0;
     }
-    // 环岛采用最近3帧多数确认：边线瞬间掉点不会清空方向证据；反向候选会重置窗口。
-    uint8_t round_hit = candidate == TRACK_ROUND_LEFT || candidate == TRACK_ROUND_RIGHT;
-    if (round_hit && state->ring_side != candidate) {
-        state->ring_side = candidate;
-        state->ring_history = 0;
-    }
-    state->ring_history = (uint8_t)(((state->ring_history << 1) | round_hit) & 0x07u);
-    state->ring_votes = (uint8_t)((state->ring_history & 1u) +
-                                  ((state->ring_history >> 1) & 1u) +
-                                  ((state->ring_history >> 2) & 1u));
-    if (state->ring_votes >= 2u &&
-        (state->ring_side == TRACK_ROUND_LEFT || state->ring_side == TRACK_ROUND_RIGHT)) {
-        candidate = state->ring_side;
-        // 两帧同向证据满足环岛门槛；普通元素仍使用原来的连续确认逻辑。
-        state->candidate = candidate;
-        state->confirm_count = ROUND_CONFIRM_FRAMES;
-        state->confirmed = candidate;
-        state->release_count = 0;
-    } else {
-        track_element_update(state,candidate);
-    }
+    track_element_update(state,candidate);
 }
 
 // Robust local bands replace the two exact-row requirement for telemetry only.
@@ -847,7 +827,7 @@ static int nav_entry_turn(const uint8_t *left, const uint8_t *right,
            !nav_pair(left[far+k],right[far+k],cols)) return 0;
         delta+=(int)left[near+k]+right[near+k]-left[far+k]-right[far+k];
     }
-    return (is_left?delta:-delta)>=16*(cols/32);
+    return (is_left?delta:-delta)>=10*(cols/32);
 }
 
 // Seed missing row widths only from current real, consecutive boundary pairs.
@@ -889,7 +869,6 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
 
     int near = rows * 4 / 5, far = rows * 3 / 5;
     int left_open = 0, right_open = 0, both_open = 0;
-    int far_left_open = 0, far_right_open = 0;
     int full = nav_pair(raw_left[near], raw_right[near], cols) &&
                nav_pair(raw_left[far], raw_right[far], cols);
     int near_mid = ((int)raw_left[near] + raw_right[near]) / 2;
@@ -908,13 +887,6 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
             int width = right[y] - left[y];
             nav->width[y] = nav->learned[y] ? (3 * nav->width[y] + width + 2) / 4 : width;
             nav->learned[y] = 1;
-        }
-        if (y >= rows / 4 && y < rows * 2 / 3)
-        {
-            far_left_open += left[y] <= ROUND_EDGE_MARGIN && right[y] > ROUND_EDGE_MARGIN &&
-                             right[y] < cols - 1 - ROUND_EDGE_MARGIN;
-            far_right_open += right[y] >= cols - 1 - ROUND_EDGE_MARGIN && left[y] > ROUND_EDGE_MARGIN &&
-                              left[y] < cols - 1 - ROUND_EDGE_MARGIN;
         }
         if (y >= rows * 2 / 3 && y < rows * 9 / 10)
         {
@@ -941,67 +913,14 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
         if(round_outer_visible(outer[near],cols) && round_outer_visible(outer[far],cols))
             nav_stage(nav,NAV_APPROACH,now_ms);
     }
-    // 初次识别只锁存方向，继续普通循迹经过B点；远区同侧开口连续确认后才启动环岛导航。
-    track_element_t start_element = detector->confirmed;
-    int confirmed_ring = detector->confirmed == TRACK_ROUND_LEFT ||
-                         detector->confirmed == TRACK_ROUND_RIGHT;
-    if (nav->phase == NAV_NORMAL && confirmed_ring) {
-        start_element = TRACK_NONE;
-        if (!nav->ring_pending_expired && nav->pending_ring != detector->confirmed) {
-            nav->pending_ring = detector->confirmed;
-            nav->ring_pending_ms = now_ms;
-            nav->ring_far_open_frames = 0;
-        }
-    } else if (nav->phase == NAV_NORMAL) {
-        if (detector->confirmed == TRACK_CROSS) {
-            nav->pending_ring = TRACK_NONE;
-            nav->ring_pending_ms = 0;
-            nav->ring_far_open_frames = 0;
-            nav->ring_pending_expired = 0;
-        } else if (nav->ring_pending_expired) {
-            // 必须先离开上一轮环岛确认，再接受新的同向候选。
-            nav->ring_pending_expired = 0;
-        }
-    }
-
-    if (nav->phase == NAV_NORMAL &&
-        (nav->pending_ring == TRACK_ROUND_LEFT || nav->pending_ring == TRACK_ROUND_RIGHT)) {
-        int pending_left = nav->pending_ring == TRACK_ROUND_LEFT;
-        int far_open = pending_left ? far_left_open : far_right_open;
-        nav->ring_far_open_rows = (uint8_t)far_open;
-        if (now_ms - nav->ring_pending_ms >= NAV_RING_PENDING_TIMEOUT_MS) {
-            nav->pending_ring = TRACK_NONE;
-            nav->ring_pending_ms = 0;
-            nav->ring_far_open_rows = 0;
-            nav->ring_far_open_frames = 0;
-            nav->ring_pending_expired = 1;
-        } else if (far_open >= rows / 20) {
-            if (nav->ring_far_open_frames < NAV_RING_FAR_OPEN_CONFIRM_FRAMES)
-                ++nav->ring_far_open_frames;
-            if (nav->ring_far_open_frames >= NAV_RING_FAR_OPEN_CONFIRM_FRAMES) {
-                start_element = nav->pending_ring;
-                nav->pending_ring = TRACK_NONE;
-                nav->ring_pending_ms = 0;
-                nav->ring_far_open_frames = 0;
-                nav->ring_pending_expired = 0;
-            } else start_element = TRACK_NONE;
-        } else {
-            nav->ring_far_open_frames = 0;
-            start_element = TRACK_NONE;
-        }
-    } else {
-        nav->ring_far_open_rows = 0;
-        nav->ring_far_open_frames = 0;
-    }
-
-    // 十字保持原有即时接管；环岛须由同侧远区开口连续确认后才进APPROACH。
-    if (nav->phase == NAV_NORMAL && start_element != TRACK_NONE &&
-        start_element != TRACK_UNKNOWN) {
-        nav->element = start_element;
+    // 普通循迹只在元素确认后切入特殊阶段；宽度未学习时进入SLOW等待，不用猜测宽度强行补线。
+    if (nav->phase == NAV_NORMAL && detector->confirmed != TRACK_NONE &&
+        detector->confirmed != TRACK_UNKNOWN)
+    {
+        nav->element = detector->confirmed;
         nav->ring_turn_count = (nav->element == TRACK_ROUND_LEFT ||
                                 nav->element == TRACK_ROUND_RIGHT) ? 0u : nav->ring_turn_count;
-        nav->entry_pending = ring_confirmed || nav->element == TRACK_ROUND_LEFT ||
-                             nav->element == TRACK_ROUND_RIGHT;
+        nav->entry_pending = ring_confirmed;
         nav->exit_guide_valid = 0;
         nav->started_ms = now_ms;
         nav->fault = !nav->learned[near] || !nav->learned[far] ? NAV_FAULT_WIDTH : NAV_FAULT_NONE;
@@ -1084,7 +1003,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     uint32_t elapsed = now_ms - nav->stage_ms;
     if (nav->phase == NAV_APPROACH && nav->feature_frames >= NAV_FEATURE_FRAMES)
         nav_stage(nav, NAV_ENTER, now_ms);
-    else if (nav->phase == NAV_ENTER && elapsed >= NAV_RING_ENTRY_MIN_MS &&
+    else if (nav->phase == NAV_ENTER && elapsed >= NAV_STAGE_MIN_MS &&
              nav->feature_frames >= NAV_FEATURE_FRAMES)
     {
         // 入环转向确认完成后记为第一次同向转弯；只有其后的出口岔路可发起第二次转向。
@@ -1168,8 +1087,7 @@ void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
     nav->entry_guided_rows=0;
     nav->exit_reject_rows=0;
     uint32_t path_hold_ms=(ring_path_phase==NAV_INSIDE || ring_path_phase==NAV_EXIT) ?
-                          NAV_INSIDE_HOLD_MS :
-                          (ring_path_phase==NAV_ENTER ? NAV_RING_ENTRY_PATH_HOLD_MS : NAV_HOLD_MS);
+                          NAV_INSIDE_HOLD_MS : NAV_HOLD_MS;
     // 逐行生成控制补线：每个候选中心都须落在可行驶白区，边线识别数组保持原始值。
     for (int y = rows / 4; y < rows; ++y)
     {

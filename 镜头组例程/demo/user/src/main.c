@@ -387,10 +387,6 @@ int main(void)
                 track_nav.apex_hits = 0;
                 track_nav.phase = NAV_NORMAL;
                 track_nav.element = TRACK_NONE;
-                track_nav.pending_ring = TRACK_NONE;
-                track_nav.ring_pending_ms = 0;
-                track_nav.ring_far_open_frames = 0;
-                track_nav.ring_pending_expired = 0;
                 track_nav.fault = NAV_FAULT_NONE;
                 memset(&track_nav.vision,0,sizeof track_nav.vision);
                 track_nav.feature_frames = track_nav.straight_frames = 0;
@@ -473,16 +469,12 @@ int main(void)
                 (track_nav.path_valid[near_row] && track_nav.path_valid[far_row]));
             if (passing && zebra_lane.current)
                 mid_err -= 0.25f * line_change;
-            // 环岛候选和导航阶段使用专用目标速度；此处不改变速度规划参数。
+            // 环岛候选先减速，最近5帧同侧命中3次确认；接管及恢复继续限速。
             uint8_t round_pending = track_detector.candidate == TRACK_ROUND_LEFT ||
                                     track_detector.candidate == TRACK_ROUND_RIGHT;
-            uint8_t ring_active = round_pending ||
-                ((track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
-                 track_nav.phase != NAV_NORMAL);
             float speed_limit = stopped ? 0.0f :
-                (ring_active ? SPEED_RING_TARGET :
-                 (passing ? ZEBRA_PASS_SPEED :
-                  (track_nav.phase != NAV_NORMAL ? SPEED_CURVE_TARGET : SPEED_STRAIGHT_TARGET)));
+                (passing ? ZEBRA_PASS_SPEED :
+                 (round_pending || track_nav.phase != NAV_NORMAL ? SPEED_CURVE_TARGET : SPEED_STRAIGHT_TARGET));
             // 环岛补线暂时无效时仍按环岛限速继续运行，不因路径保持超时将速度清零。
             if(brick_owns(&brick) && speed_limit>BRICK_SPEED) speed_limit=BRICK_SPEED;
             // 红砖补线未连续确认时禁止盲行；环岛短时丢线仍按环岛限速由导航状态机处理。
@@ -542,8 +534,8 @@ int main(void)
             char nav_extra[448];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u rw=%u fo=%u ff=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u rt=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
-                (unsigned)track_nav.fault,(unsigned)track_nav.pending_ring,(unsigned)track_nav.ring_far_open_rows,(unsigned)track_nav.ring_far_open_frames,track_element_name(track_detector.confirmed),
+                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u rt=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
+                (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
                 (unsigned)track_nav.straight_frames,(unsigned)track_nav.exit_straight_fallback,

@@ -17,10 +17,10 @@
 #define ROUND_ANCHOR_REQUIRED   (3)  // 上下各5行中至少3行恢复双边线
 #define ROUND_CORNER_MIN_DIV    (10) // 入口断点距边缘至少W/10，188列时为18像素
 #define ROUND_EXIT_CORNER_MIN_DIV (16) // 出口检测保持独立，不随入口收紧
-#define ROUND_OUTER_VISIBLE_PERCENT (65) // 容忍边线提取抖动；两侧锚点与方向趋势仍须通过
-#define ROUND_OUTER_LOSS_MAX_DIV (15) // 单段短暂出画最多H/15行，120行图像为8行
+#define ROUND_OUTER_VISIBLE_PERCENT (70) // 参考边线检查区至少70%的行实际可见
+#define ROUND_OUTER_LOSS_MAX_DIV (20) // 每段出画最多H/20行，120行图像为6行
 #define ROUND_OUTER_CLIP_MARGIN_DIV (12) // 缺口两端距对应画面边缘不超过W/12
-#define ROUND_CONFIRM_FRAMES     (3) // 环岛3帧窗口内至少2帧同向，容忍单帧边线抖动
+#define ROUND_CONFIRM_FRAMES     (3) // 环岛连续3帧同向确认，减少高速通过时的确认延迟
 #define ROUND_SEQUENCE_GAP_MS    (300u)
 #define ROUND_SEQUENCE_MAX_MS    (1500u)
 
@@ -64,10 +64,6 @@ const char *track_element_name(track_element_t element);
 #define NAV_RING_EXIT_STRAIGHT_FRAMES (12) // 环岛出口与恢复阶段要求近远路径连续有效
 #define NAV_RING_STRAIGHT_EXIT_MIN_MS (1200u) // 备用直线出口证据需在环内持续运行后才启用
 #define NAV_STAGE_MIN_MS         (150u)
-#define NAV_RING_ENTRY_MIN_MS    (600u) // 首次转向至少持续此时间，避免轻微摆动就记为已入环
-#define NAV_RING_PENDING_TIMEOUT_MS (8000u) // 识别到环岛但尚未看到远口时，等待同侧远区开口
-#define NAV_RING_FAR_OPEN_CONFIRM_FRAMES (5u) // 远区开口连续确认，过滤短时边线缺失
-#define NAV_RING_ENTRY_PATH_HOLD_MS (800u) // 入环阶段短时丢线时沿用上一帧弧线路径
 #define NAV_RING_EXIT_MIN_MS     (400u)
 #define NAV_RING_EDGE_EXIT_MIN_MS (6000u) // 环岛确认后达到此时间，才允许贴边补线触发出口转向
 #define NAV_RING_EDGE_EXIT_FRAMES (3u)    // 控制路径连续贴边帧数
@@ -123,14 +119,13 @@ typedef struct
     track_nav_phase_t slow_resume_phase; // 环岛丢线进入SLOW前的导航阶段，用于恢复同一侧循迹
     track_nav_fault_t fault;
     ring_vision_t vision;
-    track_element_t element, pending_ring;
-    uint32_t started_ms, stage_ms, last_path_ms, apex_ms, exit_turn_until_ms, ring_pending_ms;
+    track_element_t element;
+    uint32_t started_ms, stage_ms, last_path_ms, apex_ms, exit_turn_until_ms;
     uint8_t feature_frames, straight_frames, exit_confirm_frames, exit_path_frames;
     uint8_t ring_turn_count; // 环岛同向转弯进度：0未入环转弯，1首转完成，2出环第二转已启动
     uint8_t exit_anchor, guide_valid, drive_valid, entry_pending;
     uint8_t exit_guide_row, exit_guide_center, exit_guide_valid;
     uint8_t exit_evidence, exit_straight_fallback, ring_edge_turn_hint;
-    uint8_t ring_far_open_rows, ring_far_open_frames, ring_pending_expired;
     int16_t exit_guide_slope;
     uint8_t entry_guide; // 当前近控制行：0参考边回退，1开口引导，2真实岛边
     uint8_t entry_gap_valid, entry_gap_rows, entry_edge_rows, entry_guided_rows;
