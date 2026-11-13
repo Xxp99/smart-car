@@ -6,7 +6,7 @@
 #ifndef BRICK_ENABLE
 #define BRICK_ENABLE 1
 #endif
-#define BRICK_SPEED 125.0f
+#define BRICK_SPEED 100.0f
 #define BRICK_CONFIRM_FRAMES 3
 #define BRICK_CLEAR_FRAMES 5
 // 2026-11-01实测：前进1米对应的编码器计数。
@@ -26,7 +26,6 @@
 #define BRICK_SHIFT_RATE 60.0f // 每秒图像像素偏移量。
 
 typedef enum {BRICK_IDLE,BRICK_AVOID,BRICK_HOLD,BRICK_RECOVER,BRICK_FAULT} brick_phase_t;
-// 保存候选侧、确认/清空帧、避障偏移和故障原因，避免单帧检测直接改道。
 typedef struct {
     brick_phase_t phase;
     uint8_t side,candidate,hits,clear,valid,initialized;
@@ -40,7 +39,6 @@ static const char *brick_reason(const brick_t *s) {
     return names[s->reason<=BRICK_ONE?s->reason:BRICK_FAILED];
 }
 typedef struct {float angle;uint32_t ms;uint8_t initialized;} brick_steering_t;
-// 对请求舵角做每秒限速；路径无效时保持旧角度，是否停车由速度规划器依据valid处理。
 static float brick_steering(brick_steering_t *s,float requested,int owns,int valid,uint32_t now,float center) {
     if(!s->initialized) {s->angle=center;s->ms=now;s->initialized=1;}
     uint32_t dt=now-s->ms;s->ms=now;
@@ -55,9 +53,7 @@ static float brick_steering(brick_steering_t *s,float requested,int owns,int val
     // 路径无效时仅保持舵角；主循环仍须将速度设为零。
     return s->angle;
 }
-// 以下小工具只服务红砖检测和安全范围判断。
 static int brick_abs(int n) {return n<0?-n:n;}
-// 边线坐标需位于图像内部，且两边之间至少保留图像宽度的1/8。
 static int brick_pair(int l,int r,int w) {return l>2 && r<w-3 && r-l>=w/8;}
 
 // 仅检测单侧边界向内的台阶，并用真实道路边界约束范围。
@@ -66,7 +62,6 @@ static int brick_detect(const uint8_t *im,const uint8_t *l,const uint8_t *r,
                          const uint8_t *width,const uint8_t *learned,int h,int w,
                          int *top,int *bottom,int *inset)
 {
-    // 红砖按边线台阶和道路边界几何特征定位，不按颜色分类，降低光照变化的影响。
     int result=0;
     for(int side=1;side<=2;++side) {
         const uint8_t *edge=side==1?l:r,*outer=side==1?r:l;
@@ -110,7 +105,6 @@ static void brick_update(brick_t *s,const uint8_t *im,const uint8_t *l,const uin
                          const uint8_t *width,const uint8_t *learned,int h,int w,
                          uint32_t now,uint32_t distance,int allowed)
 {
-    // 状态机管理多帧确认、编码器清空距离与恢复；allowed=0 时不启动新的避让接管。
     if(!BRICK_ENABLE || !allowed) {memset(s,0,sizeof *s);return;}
     uint32_t dt=s->initialized?now-s->last_ms:0;
     s->last_ms=now;s->initialized=1;
@@ -182,7 +176,6 @@ static const char *brick_name(const brick_t *s) {
     return s->phase==BRICK_AVOID?"BYPAS":"CHECK";
 }
 // 只从当前帧恢复边界，绝不复用上一帧的边线。
-// 检查边界是否不是图像外沿哨兵；只使用真实可见边界推算避让通道。
 static int brick_edge_visible(int x,int w) {return x>2 && x<w-3;}
 static int brick_edge_at(const uint8_t *edge,int y,int h,int w) {
     if(brick_edge_visible(edge[y],w)) return edge[y];
@@ -197,7 +190,6 @@ static void brick_apply(brick_t *s,const uint8_t *im,const uint8_t *l,const uint
                         const uint8_t *width,const uint8_t *learned,uint8_t *mid,
                         uint8_t *valid,int h,int w)
 {
-    // 按障碍所在侧生成避障中线；近、远控制行均有效并连续确认后才允许继续行驶。
     if(s->phase==BRICK_IDLE) return;
     if(s->phase==BRICK_FAULT) {s->valid=0;s->reason=BRICK_FAILED;return;}
     int near=h*4/5,far=h*3/5;

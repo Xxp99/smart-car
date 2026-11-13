@@ -3,12 +3,9 @@
 
 #include "zf_common_headfile.h"
 
-// 左右轮共用动态目标速度，单位：编码器计数/采样周期（不是RPM，也不是物理速度单位）。
-// 调参时需保持PIT采样周期与编码器计数尺度不变，或同步重新标定PI参数。
-#define SPEED_STRAIGHT_TARGET    (125.0f)
-#define SPEED_CURVE_TARGET       (125.0f)  // 非环岛弯道目标速度
-#define SPEED_RING_TARGET        (125.0f)   // 环岛速度保持回退基线值
-#define SPEED_PATH_LOST_TARGET   (50.0f)   // 路径无效时低速继续，不按正常目标速度盲行
+// 左右轮共用动态目标速度，单位：编码器计数/采样周期（不是 RPM）。
+#define SPEED_STRAIGHT_TARGET    (120.0f)
+#define SPEED_CURVE_TARGET       (105.0f)
 #define SPEED_BEND_START         (5.0f)   // 像素偏差不超过此值时使用直道速度
 #define SPEED_BEND_FULL          (30.0f)  // 达到此值时使用最低弯道速度
 #define SPEED_ACCEL_STEP         (0.40f)  // 每10ms目标速度增加量
@@ -47,6 +44,9 @@ extern float speed_pwm;                         // 施加在电机上的PWM占�
 
 void My_Pid_Init(void);
 void Speed_Plan_Update(float near_error, float line_change, uint8 valid, float speed_limit);
+void Speed_Task_Update(float request, uint32 now);
+extern volatile uint8 speed_task_expired;
+extern volatile uint32 speed_wheel_difference;
 void Speed_Stop_Latch(void); // 终点停车锁定，仅复位/重新上电解除。
 void Speed_Odom_Update(short left_count, short right_count); // 每10ms读取编码器后调用
 void Speed_Target_Tick(void); // 仅在10ms速度控制中断中调用

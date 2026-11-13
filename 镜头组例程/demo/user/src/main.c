@@ -1,4 +1,5 @@
 #include "main.h" // 所有引脚信息更改在main.h里改宏
+#include "blind_box.h"
 #include "fsl_clock.h"
 #include <stdio.h>
 #include "zebra_pass.h"
@@ -42,7 +43,6 @@
 const float servo_motor_duty_middle = (SERVO_MOTOR_R_MAX + SERVO_MOTOR_L_MAX) / 2.f; 
 
 #if C30_LEVEL_TEST_ENABLE
-// C30电平检查：只验证目标引脚是否输出高低电平，不应连接舵机或电机负载。
 static void C30_Level_Test_Run(void)
 {
     // 不启动摄像头、编码器、速度PID及PIT；驱动电机始终零占空比。
@@ -78,7 +78,6 @@ static void C30_Level_Test_Run(void)
 
 #if SERVO_TEST_ENABLE
 // 仅适用于当前C30 / PWM4 SM2 A的边沿对齐测试。显示寄存器推算值，非实测波形。
-// 舵机脉宽诊断：逐步输出测试占空比，用于确认PWM频率、舵机中位和左右方向。
 static void Servo_PWM_Diagnostics(void)
 {
     char row[22];
@@ -130,7 +129,6 @@ static void Servo_PWM_Diagnostics(void)
     tft180_show_string(0, 120, "REG CALC; NOT SCOPE");
 }
 
-// 舵机测试模式：独占主循环并按设定角度摆动；测试结束需关闭宏才能恢复循迹。
 static void Servo_Test_Run(void)
 {
     // 独立启动路径：不初始化摄像头、速度 PID 或 PIT 控制中断。
@@ -168,7 +166,6 @@ static uint32 wireless_test_last_ms;
 static uint16 wireless_test_sent, wireless_test_busy;
 
 // 每秒尝试一次；模块忙或未连接时直接跳过，不等待RTS超时。
-// 无线文字测试的非阻塞发送轮询，受RTS流控且不与图像/速度遥测共用UART。
 static void Wireless_Test_Poll(void)
 {
     static const uint8 message[] = "SmartCar5 UART OK\r\n";
@@ -187,7 +184,6 @@ static void Wireless_Test_Poll(void)
     if (wireless_test_sent < 65535u) ++wireless_test_sent;
 }
 
-// 将无线测试发送状态显示到屏幕，便于区分模块未就绪、被流控和已发送。
 static void Wireless_Test_Show(void)
 {
     char row[22];
@@ -201,7 +197,6 @@ static void Wireless_Test_Show(void)
 
 #endif
 
-// 初始化摄像头、舵机、电机、编码器、无线串口和固定周期速度控制中断。
 void Init()
 {
 
@@ -263,6 +258,9 @@ void Init()
     tft180_show_string(0, 16, "BOOT 7: TIMER      ");
 
     // 固定速度闭环的采样周期，与目标速度的计数单位对应。
+#if BB_BENCH_TEST
+    Speed_Task_Update(0.0f, control_time_ms);
+#endif
     pit_ms_init(PIT_CH0, SPEED_SAMPLE_PERIOD_MS);
 }
 
@@ -277,9 +275,12 @@ static zebra_lane_t zebra_lane = {0};
 static float last_servo_angle = ZEBRA_STRAIGHT_ANGLE;
 static track_detector_t track_detector = {0};
 static track_nav_t track_nav = {0};
-// 环岛边缘出口提示需连续命中多帧；单帧贴边不应改变环岛阶段。
 static uint8_t ring_edge_turn_frames;
+static uint8_t left_ring_approach_active, left_ring_depart_active;
+static uint32 left_ring_approach_odo, left_ring_depart_odo, left_ring_entry_odo;
+static uint8_t left_ring_entry_seen, left_ring_exit_edge_frames;
 static uint8 appr_seen, enter_seen;
+static blind_box_t blind_box;
 static brick_t brick = {0};
 static brick_steering_t brick_servo = {0};
 static uint32 last_navigation_frame_ms;
@@ -287,7 +288,6 @@ static uint8 navigation_frame_initialized;
 static uint8_t stripe_row[MT9V03X_H];
 uint8_t control_left[MT9V03X_H], control_right[MT9V03X_H], control_mid[MT9V03X_H];
 
-// 主循环每处理一帧图像：二值化与边线提取→特殊元素调度→速度/舵机控制→显示与遥测。
 int main(void)
 {
     clock_init(SYSTEM_CLOCK_600M); // 不可删除
@@ -302,6 +302,33 @@ int main(void)
     Init();
     interrupt_global_enable(0);
     tft180_show_string(0, 16, "BOOT 8: WAIT CAMERA");
+#if BB_BENCH_TEST
+    /* Explicit bench mode: lift ALL driven wheels before powering the board.
+     * One low-speed forward pulse, full stop, reverse pulse, then latched stop. */
+    uint32 bench_start = control_time_ms;
+    uint8 bench_fault = 0;
+    pwm_set_duty(SERVO_MOTOR_PWM, SERVO_MOTOR_DUTY(servo_motor_duty_middle));
+    while (1) {
+        uint32 elapsed = control_time_ms-bench_start;
+        float request = elapsed>=1000u && elapsed<2000u ? 10.0f :
+            (elapsed>=3500u && elapsed<4500u ? -10.0f : 0.0f);
+        if ((elapsed>=1200u && elapsed<2000u && (encoder_data_1 < -2 || encoder_data_2 < -2)) ||
+            (elapsed>=3700u && elapsed<4500u && (encoder_data_1 > 2 || encoder_data_2 > 2)))
+            bench_fault=1;
+        if (bench_fault || elapsed>=4500u) { request=0; Speed_Stop_Latch(); }
+        Speed_Task_Update(request, control_time_ms);
+        char bench_row[22];
+        snprintf(bench_row,sizeof bench_row,"BENCH %+d F%u       ",(int)request,(unsigned)bench_fault);
+        tft180_show_string(0,32,bench_row);
+        tft180_show_int(0,48,encoder_data_1,5);
+        tft180_show_int(48,48,encoder_data_2,5);
+#if WIRELESS_SPEED_ENABLE
+        Wireless_State_Update("BENCH","TEST","NONE",255,request==0,control_time_ms);
+        Wireless_Speed_Poll();
+#endif
+        system_delay_ms(10);
+    }
+#endif
 
     while (1)
     {
@@ -325,10 +352,9 @@ int main(void)
             memcpy(control_right, right_line, sizeof(control_right));
             memcpy(control_mid, mid_line, sizeof(control_mid));
 #if ZEBRA_ENABLE
-            // 先检测斑马线，再尝试重建可用中线。原始图像命中但补线无效时，不能接管方向。
             uint8_t zebra_raw_candidate = zebra_detect_lane(&image[0][0], MT9V03X_H, MT9V03X_W, left_line, right_line);
             if (zebra_raw_candidate || zebra.phase != ZEBRA_NORMAL ||
-                zebra_race.phase == ZEBRA_RACE_ALIGN)
+                zebra_race.phase == ZEBRA_RACE_PASS || zebra_race.phase == ZEBRA_RACE_CLEAR)
                 zebra_lane_build(&zebra_lane, &image[0][0], track_nav.width,
                     track_nav.learned, control_mid, track_nav.path_valid,
                     MT9V03X_H, MT9V03X_W, control_time_ms);
@@ -350,6 +376,10 @@ int main(void)
             uint8_t near_row = MT9V03X_H * 4 / 5;
             uint8_t far_row = MT9V03X_H * 3 / 5;
             uint32 now = control_time_ms;
+            uint32 ring_odo = speed_distance_counts;
+            if (left_ring_depart_active &&
+                ring_odo - left_ring_entry_odo >= NAV_RING_TOP_GATE_END_COUNTS)
+                left_ring_depart_active = 0;
             if (navigation_frame_initialized && now-last_navigation_frame_ms >= SPEED_IMAGE_TIMEOUT_MS)
             {
                 memset(&track_detector, 0, sizeof(track_detector));
@@ -358,29 +388,37 @@ int main(void)
             navigation_frame_initialized = 1;
             last_navigation_frame_ms = now;
 #if ZEBRA_ENABLE
-            // 只有重建后的有效候选才累计确认帧；普通边线恢复需同时满足近、远行稳定。
             uint8_t path_recovered =
                 zebra_row_valid(left_line, right_line, stripe_row, near_row, MT9V03X_W) &&
                 zebra_row_valid(left_line, right_line, stripe_row, far_row, MT9V03X_W);
+            if (!bb_active(&blind_box)) {
             zebra_update(&zebra, zebra_candidate, path_recovered,
                          mid_line[near_row], mid_line[far_row], now);
-            zebra_race_update(&zebra_race, &zebra, zebra_candidate,
-                              &image[0][0], MT9V03X_H, MT9V03X_W, now,
-                              speed_distance_counts);
-            uint8_t stopped = zebra_race.phase == ZEBRA_RACE_STOP;
-            if (stopped) Speed_Stop_Latch(); // 下一次10ms中断清零两轮PWM及PI积分。
+            zebra_race_update(&zebra_race, &zebra, zebra_candidate, now, speed_distance_counts);
+            }
+            uint8_t zebra_pass_count = zebra_race.phase == ZEBRA_RACE_START ?
+                (zebra_race.clear_tracking ? 1 : 0) :
+                (zebra_race.phase >= ZEBRA_RACE_PASS ? 2 : 1);
+            bb_update(&blind_box, zebra_race.phase == ZEBRA_RACE_STOP,
+                zebra_pass_count, now, ring_odo, encoder_data_1, encoder_data_2,
+                (int32_t)speed_wheel_difference);
+            if (bb_active(&blind_box) && speed_task_expired) bb_fail(&blind_box, BB_CAMERA);
+            if (bb_active(&blind_box)) Speed_Task_Update(blind_box.request, now);
+            uint8_t stopped = bb_active(&blind_box) ? blind_box.request == 0.0f :
+                zebra_race.phase == ZEBRA_RACE_STOP;
+            if (stopped && (!bb_active(&blind_box) || blind_box.phase == BB_DONE || blind_box.phase == BB_FAULT)) Speed_Stop_Latch(); // 下一次10ms中断清零两轮PWM及PI积分。
             // 连续3帧且车道重建有效后才确认；通过时按重建中线循迹。
-            uint8_t finishing = zebra_race.phase == ZEBRA_RACE_ALIGN;
-            uint8_t passing = zebra_slow(&zebra, zebra_candidate) || finishing;
+            // The stripe marks the finish on its second encounter. Keep normal
+            // visual steering through the first pass and the next left bend.
+            uint8_t passing = 0;
 #else
-            uint8_t path_recovered = 0, stopped = 0, finishing = 0, passing = 0;
+            uint8_t path_recovered = 0, stopped = 0, passing = 0;
 #endif
             track_nav.apex_valid = 0; // No current apex until this frame runs navigation.
             track_nav.entry_guide = 0;
             memset(&track_nav.vision,0,sizeof track_nav.vision);
-            if (zebra.phase != ZEBRA_NORMAL || finishing || stopped)
+            if (stopped || bb_active(&blind_box))
             {
-                // 斑马线通过/恢复或终点阶段优先，清除冲突的红砖与元素导航状态。
                 memset(&brick,0,sizeof brick);
                 // 斑马线确认后才接管；候选仅减速，不销毁现有导航阶段。
                 // 保留此前学到的赛道宽度，但清除元素确认和旧路径保持。
@@ -396,7 +434,6 @@ int main(void)
             }
             else if (zebra_candidate)
             {
-                // 斑马线尚在候选确认时只暂停元素计数，保留当前导航阶段和最后可信路径。
                 memset(&brick,0,sizeof brick);
                 track_nav.apex_hits = 0;
                 // 候选图像不能推进元素确认或阶段；暂用此前可信路径。
@@ -413,14 +450,12 @@ int main(void)
             else
             {
                 track_element_t raw_kind=track_visual_classify(&track_nav.vision,&image[0][0],left_line,right_line,MT9V03X_H,MT9V03X_W);
-                // 红砖只可在普通循迹时新接管；已启动的避让允许完成，避免中途被打断。
                 int brick_allowed=brick_owns(&brick) || (track_nav.phase==NAV_NORMAL &&
                     (raw_kind==TRACK_NONE || raw_kind==TRACK_UNKNOWN));
                 brick_update(&brick,&image[0][0],left_line,right_line,
                     track_nav.width,track_nav.learned,MT9V03X_H,MT9V03X_W,
                     now,speed_distance_counts,brick_allowed);
                 if(brick_owns(&brick)) {
-                    // 红砖接管期间冻结元素确认，以避障中线和有效标志替代普通导航路径。
                     // Freeze learned road width and element confirmation during a pass.
                     memset(&track_detector,0,sizeof track_detector);
                     for(int y=0;y<MT9V03X_H;++y)
@@ -437,8 +472,47 @@ int main(void)
                             MT9V03X_H,MT9V03X_W,now);
                     else
                         abc_element_update(&track_detector,raw_kind);
+                    // This track has only a left roundabout. Discard right-ring
+                    // votes before they can enter navigation or slow the car.
+                    if (track_detector.candidate == TRACK_ROUND_RIGHT ||
+                        track_detector.confirmed == TRACK_ROUND_RIGHT)
+                    {
+                        track_detector.candidate = TRACK_NONE;
+                        track_detector.confirmed = TRACK_NONE;
+                        track_detector.ring_history = track_detector.ring_votes = 0;
+                        track_detector.confirm_count = track_detector.release_count = 0;
+                        track_detector.sequence_side = track_detector.sequence_progress = 0;
+                    }
+                    if (track_nav.phase == NAV_NORMAL && !left_ring_approach_active &&
+                        !left_ring_depart_active && track_detector.confirmed == TRACK_ROUND_LEFT)
+                    {
+                        left_ring_approach_odo = ring_odo; // A: retain the first reliable left-ring vote.
+                        left_ring_approach_active = 1;
+                    }
+                    if (left_ring_depart_active)
+                    {
+                        // After leaving at A, keep the B-C straight clear of repeat ring votes.
+                        memset(&track_detector, 0, sizeof(track_detector));
+                    }
+                    track_nav.entry_distance_ready = !left_ring_approach_active ||
+                        ring_odo - left_ring_approach_odo >= NAV_RING_A_TO_C_COUNTS;
+                    track_element_t previous_element = track_nav.element;
                     track_nav_update(&track_nav, &track_detector, left_line, right_line, &image[0][0],
                         control_left, control_right, control_mid, MT9V03X_H, MT9V03X_W, now);
+                    if (track_nav.phase == NAV_ENTER && previous_element == TRACK_ROUND_LEFT &&
+                        !left_ring_entry_seen)
+                    {
+                        left_ring_entry_odo = ring_odo;
+                        left_ring_entry_seen = 1;
+                        left_ring_approach_active = 0; // C: entrance is committed.
+                    }
+                    if (previous_element == TRACK_ROUND_LEFT && track_nav.phase == NAV_NORMAL)
+                    {
+                        left_ring_depart_odo = ring_odo;
+                        left_ring_depart_active = 1;
+                        left_ring_entry_seen = 0;
+                        left_ring_exit_edge_frames = 0;
+                    }
                 }
             }
             uint8_t ring_inside_mode =
@@ -449,16 +523,30 @@ int main(void)
                 now - track_nav.started_ms >= NAV_RING_EDGE_EXIT_MIN_MS &&
                 track_nav.ring_edge_turn_hint)
             {
-                // 仅在环内阶段且超过最短行驶时间后累计贴边提示；连续命中才触发出口转向。
                 if (ring_edge_turn_frames < NAV_RING_EDGE_EXIT_FRAMES)
                     ++ring_edge_turn_frames;
             }
             else ring_edge_turn_frames = 0;
-            if (ring_edge_turn_frames >= NAV_RING_EDGE_EXIT_FRAMES)
+            // The normal edge hint needs a valid synthetic lane. Near A, both
+            // control rows may disappear; use travelled C-to-A distance and
+            // two right-edge observations to request the left exit instead.
+            uint8_t a_exit_window = left_ring_entry_seen &&
+                (track_nav.phase == NAV_INSIDE ||
+                 (track_nav.phase == NAV_SLOW && track_nav.slow_resume_phase == NAV_INSIDE)) &&
+                ring_odo - left_ring_entry_odo >= NAV_RING_EXIT_MIN_TRAVEL_COUNTS;
+            if (a_exit_window && mid_line[near_row] >= MT9V03X_W * 3 / 5)
             {
-                // 交由导航状态机切换出口阶段，不在此处直接改写图像边界。
+                if (left_ring_exit_edge_frames < 2) ++left_ring_exit_edge_frames;
+            }
+            else if (left_ring_exit_edge_frames) --left_ring_exit_edge_frames;
+            uint8_t ring_exit_force = a_exit_window &&
+                ring_odo - left_ring_entry_odo >= NAV_RING_EXIT_FORCE_COUNTS;
+            if (ring_edge_turn_frames >= NAV_RING_EDGE_EXIT_FRAMES ||
+                left_ring_exit_edge_frames >= 2 || ring_exit_force)
+            {
                 track_nav_request_ring_exit(&track_nav, MT9V03X_H, MT9V03X_W, now);
                 ring_edge_turn_frames = 0;
+                left_ring_exit_edge_frames = 0;
             }
             if (passing && !stopped) track_nav.drive_valid = zebra_lane.current;
             if(track_nav.phase==NAV_APPROACH) appr_seen=1;
@@ -473,17 +561,22 @@ int main(void)
             // 环岛候选先减速，最近5帧同侧命中3次确认；接管及恢复继续限速。
             uint8_t round_pending = track_detector.candidate == TRACK_ROUND_LEFT ||
                                     track_detector.candidate == TRACK_ROUND_RIGHT;
-            uint8_t ring_speed_mode = round_pending ||
-                (track_nav.phase != NAV_NORMAL &&
-                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT));
             float speed_limit = stopped ? 0.0f :
-                (ring_speed_mode ? SPEED_RING_TARGET :
-                 (passing ? ZEBRA_PASS_SPEED : SPEED_STRAIGHT_TARGET));
+                (passing ? ZEBRA_PASS_SPEED :
+                 (round_pending || track_nav.phase != NAV_NORMAL ? SPEED_CURVE_TARGET : SPEED_STRAIGHT_TARGET));
+            // 从确认左环岛起提前降速，出环后沿用现有保护区间通过右上角弯道。
+            if (!passing && !stopped)
+            {
+                const float left_ring_speed = 70.0f;
+                const float left_ring_depart_speed = 75.0f;
+                if (track_nav.element == TRACK_ROUND_LEFT && track_nav.phase != NAV_NORMAL)
+                    speed_limit = MIN(speed_limit, left_ring_speed);
+                else if (left_ring_depart_active && track_nav.phase == NAV_NORMAL)
+                    speed_limit = MIN(speed_limit, left_ring_depart_speed);
+            }
             // 环岛补线暂时无效时仍按环岛限速继续运行，不因路径保持超时将速度清零。
             if(brick_owns(&brick) && speed_limit>BRICK_SPEED) speed_limit=BRICK_SPEED;
-            // 路径无效仍保持非零速度，但限制在低速，避免沿旧路径以高速盲行。
-            if (!speed_line_valid && !stopped && speed_limit>SPEED_PATH_LOST_TARGET)
-                speed_limit=SPEED_PATH_LOST_TARGET;
+            // 补线无效时不再强制把速度目标清零。
             Speed_Plan_Update(mid_err, line_change,
                               speed_line_valid, speed_limit);
 
@@ -497,35 +590,57 @@ int main(void)
                 zebra_lane.current, passing && !stopped,
                 now, last_servo_angle, servo_motor_duty_middle);
 #endif
+            uint8_t ring_arc = (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
+                (track_nav.phase == NAV_ENTER || track_nav.phase == NAV_INSIDE ||
+                 (track_nav.phase == NAV_SLOW &&
+                  (track_nav.slow_resume_phase == NAV_ENTER || track_nav.slow_resume_phase == NAV_INSIDE)));
+            if (ring_arc)
+            {
+                float turn_sign = track_nav.element == TRACK_ROUND_LEFT ? 1.0f : -1.0f;
+                float arc_angle = NAV_RING_ARC_LOST_ANGLE;
+                if (track_nav.path_valid[near_row] && track_nav.path_valid[far_row])
+                    arc_angle = NAV_RING_ARC_BASE_ANGLE + mid_err * NAV_RING_ARC_ERROR_GAIN;
+                arc_angle = MAX(arc_angle, NAV_RING_ARC_MIN_ANGLE);
+                arc_angle = MIN(arc_angle, NAV_RING_ARC_MAX_ANGLE);
+                tmp_duty = servo_motor_duty_middle + turn_sign * arc_angle;
+            }
+            uint8_t ring_entry_turn = !stopped && !passing &&
+                (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) && track_nav.phase == NAV_ENTER &&
+                now - track_nav.stage_ms < NAV_RING_ENTRY_TURN_MS;
+            if (ring_entry_turn)
+            {
+                // At C, enter the left ring before following its inner edge.
+                // Keep the pulse short so vision takes control through the arc.
+                float entry_sign = track_nav.element == TRACK_ROUND_LEFT ? 1.0f : -1.0f;
+                float entry_duty = servo_motor_duty_middle + entry_sign * NAV_RING_ENTRY_TURN_ANGLE;
+                if (entry_sign > 0) tmp_duty = MAX(tmp_duty, entry_duty);
+                else tmp_duty = MIN(tmp_duty, entry_duty);
+                tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+                tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
+            }
             if (!stopped &&
                 (track_nav.element == TRACK_ROUND_LEFT || track_nav.element == TRACK_ROUND_RIGHT) &&
-                track_nav.ring_turn_count >= 2u &&
-                (track_nav.phase == NAV_EXIT || track_nav.phase == NAV_RECOVER ||
-                 (track_nav.phase == NAV_SLOW &&
-                  (track_nav.slow_resume_phase == NAV_EXIT ||
-                   track_nav.slow_resume_phase == NAV_RECOVER))) &&
-                (track_nav.exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES ||
-                 (int32_t)(now-track_nav.exit_turn_until_ms) < 0) &&
-                (int32_t)(now-(track_nav.exit_turn_until_ms +
-                    NAV_RING_EXIT_TURN_MAX_MS - NAV_RING_EXIT_TURN_MS)) < 0)
+                (track_nav.phase == NAV_EXIT ||
+                 (track_nav.phase == NAV_SLOW && track_nav.slow_resume_phase == NAV_EXIT)) &&
+                track_nav.exit_path_frames < NAV_RING_EXIT_STRAIGHT_FRAMES)
             {
-                // 第二次同向转弯至少保持2秒，并持续到近远出口路径均连续有效；再恢复视觉循迹。
-                tmp_duty = servo_motor_duty_middle +
-                    (track_nav.element == TRACK_ROUND_LEFT ? NAV_RING_EXIT_TURN_ANGLE : -NAV_RING_EXIT_TURN_ANGLE);
+                // After A, leave the inner arc. A brief turn joins the outer
+                // tangent; with no two-row path, straighten instead of circling.
+                if ((int32_t)(track_nav.exit_turn_until_ms - now) > 0 &&
+                    !(track_nav.path_valid[near_row] && track_nav.path_valid[far_row]))
+                    tmp_duty = servo_motor_duty_middle +
+                        (track_nav.element == TRACK_ROUND_LEFT ? NAV_RING_EXIT_TURN_ANGLE : -NAV_RING_EXIT_TURN_ANGLE);
+                else if (!(track_nav.path_valid[near_row] && track_nav.path_valid[far_row]))
+                    tmp_duty = last_servo_angle;
                 tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
                 tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
             }
             if (stopped) tmp_duty = ZEBRA_STRAIGHT_ANGLE;
             tmp_duty = brick_steering(&brick_servo, tmp_duty, brick_owns(&brick),
                 brick.valid, now, servo_motor_duty_middle);
-            /* 第二次见到斑马线后，以黑条在图像中的主方向闭环微调；
-             * 对齐后锁存停车，覆盖环岛、砖块和普通循迹的舵机命令。 */
-            if (zebra_race.phase == ZEBRA_RACE_ALIGN)
-                tmp_duty = zebra_align_steering(&zebra_race, servo_motor_duty_middle,
-                    last_servo_angle, SERVO_DIR);
-            tmp_duty = MAX(tmp_duty, MIN(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
-            tmp_duty = MIN(tmp_duty, MAX(SERVO_MOTOR_L_MAX, SERVO_MOTOR_R_MAX));
-            if (stopped) tmp_duty = servo_motor_duty_middle;
+#if ZEBRA_ENABLE
+            if (bb_active(&blind_box)) tmp_duty = servo_motor_duty_middle;
+#endif
             last_servo_angle = tmp_duty;
             pwm_set_duty(SERVO_MOTOR_PWM, SERVO_MOTOR_DUTY(tmp_duty));
 
@@ -549,13 +664,23 @@ int main(void)
             char nav_extra[448];
             ring_side_t *vl=&track_nav.vision.side[0], *vr=&track_nav.vision.side[1];
             snprintf(nav_extra,sizeof nav_extra,
-                " F=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u rt=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
-                (unsigned)track_nav.fault,track_element_name(track_detector.confirmed),
+                " fw=SC5F1 lim=%.0f e10=%d d10=%d s10=%d ctl=%u/%u F=%u et=%u gate=%u/%lu lap=%lu raw=%u,%u/%u,%u edge=%u exf=%u OK=%s V=%u seen=%u/%u feat=%u xf=%u sf=%u xfb=%u age=%lu rs=%u Lfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u Rfeat=%u/%u A=%u/%u/%u B=%u/%u/%u C=%u/%u/%u width=%u/%u th=%u eg=%u/%u/%u/%u ap=%u/%u,%u xg=%u/%u/%u/%u/%u xe=%u/%d ctl=%u/%u e10=%d s10=%d rh=%u ep=%u zr=%u zc=%u zp=%u zh=%u/%u zl=%u zmid=%u/%u zpass=%u",
+                (double)speed_limit,(int)(mid_err*10.0f),(int)(line_change*10.0f),
+                (int)(tmp_duty*10.0f),(unsigned)control_mid[near_row],
+                (unsigned)control_mid[far_row],
+                (unsigned)track_nav.fault,(unsigned)ring_entry_turn,
+                (unsigned)(left_ring_approach_active ? 1 : (left_ring_depart_active ? 2 : 0)),
+                (unsigned long)(left_ring_approach_active ? ring_odo-left_ring_approach_odo :
+                    (left_ring_depart_active ? ring_odo-left_ring_depart_odo : 0)),
+                (unsigned long)(left_ring_entry_seen ? ring_odo-left_ring_entry_odo : 0),
+                (unsigned)left_line[near_row],(unsigned)right_line[near_row],
+                (unsigned)left_line[far_row],(unsigned)right_line[far_row],
+                (unsigned)left_ring_exit_edge_frames,(unsigned)ring_exit_force,
+                track_element_name(track_detector.confirmed),
                 (unsigned)track_detector.ring_votes,(unsigned)appr_seen,(unsigned)enter_seen,
                 (unsigned)track_nav.feature_frames,(unsigned)track_nav.exit_confirm_frames,
                 (unsigned)track_nav.straight_frames,(unsigned)track_nav.exit_straight_fallback,
                 (unsigned long)(now-track_nav.stage_ms),(unsigned)track_nav.slow_resume_phase,
-                (unsigned)track_nav.ring_turn_count,
                 (unsigned)vl->lost,(unsigned)vl->monotonic,
                 (unsigned)vl->a.valid,(unsigned)vl->a.x,(unsigned)vl->a.y,
                 (unsigned)vl->b.valid,(unsigned)vl->b.x,(unsigned)vl->b.y,
@@ -581,6 +706,17 @@ int main(void)
                 (unsigned)control_mid[near_row],(unsigned)control_mid[far_row],
                 (unsigned)passing);
             Wireless_Nav_Update(nav_extra);
+            char bb_extra[160];
+            snprintf(bb_extra, sizeof bb_extra,
+                " bb=%s bc=%u bx=%ld bt=%ld br=%ld bv=%d dir=%d bf=%u bs=%u/%u cal=%u bo=%lu",
+                bb_name(blind_box.phase), (unsigned)blind_box.passes,
+                (long)(blind_box.ref_valid?bb_mm(blind_box.x):0),
+                (long)bb_mm(blind_box.forward_target), (long)bb_mm(blind_box.reverse_target),
+                (int)(((int)encoder_data_1+encoder_data_2)/2),
+                blind_box.request>0?1:(blind_box.request<0?-1:0),
+                (unsigned)blind_box.fault, (unsigned)blind_box.first_stop,
+                (unsigned)blind_box.final_stop, (unsigned)BB_ENABLED, (unsigned long)blind_box.ref_odo);
+            Wireless_Blind_Box_Update(bb_extra);
             Wireless_Path_Update(track_nav.path_valid[near_row],track_nav.path_valid[far_row],
                 track_nav.learned[near_row],track_nav.learned[far_row],track_nav.drive_valid);
             Wireless_Guide_Update(control_mid[near_row],control_mid[far_row],
@@ -612,7 +748,19 @@ int main(void)
                     track_element_name(track_detector.candidate));
             tft180_show_string(0, 82, status_row);
 #if ZEBRA_ENABLE
-            tft180_show_string(0, 92, zebra_status(&zebra, &zebra_race, zebra_candidate));
+            if (blind_box.phase != BB_WAIT) {
+                char bb_row[22];
+                snprintf(bb_row, sizeof bb_row, "B:%-5s C%u F%u V%d   ",
+                    bb_name(blind_box.phase), (unsigned)blind_box.passes,
+                    (unsigned)blind_box.fault, (int)(((int)encoder_data_1+encoder_data_2)/2));
+                tft180_show_string(0, 92, bb_row);
+                snprintf(bb_row, sizeof bb_row, "X%ld T%ld D%+d       ",
+                    (long)(blind_box.ref_valid?bb_mm(blind_box.x):0),
+                    (long)bb_mm(blind_box.phase==BB_REVERSE || blind_box.phase==BB_STOP2 ?
+                        blind_box.reverse_target:blind_box.forward_target),
+                    blind_box.request>0?1:(blind_box.request<0?-1:0));
+                tft180_show_string(0, 122, bb_row);
+            } else tft180_show_string(0, 92, zebra_status(&zebra, &zebra_race, zebra_candidate));
 #else
             tft180_show_string(0, 92, "Z:OFF                ");
 #endif
@@ -624,7 +772,7 @@ int main(void)
             tft180_show_string(0, 112, "R:");
             tft180_show_int(36, 112, encoder_data_2, 5);
 #if WIRELESS_SPEED_ENABLE
-            Wireless_Speed_Show();
+            if (blind_box.phase == BB_WAIT) Wireless_Speed_Show();
 #elif WIRELESS_IMAGE_ENABLE
             Wireless_Image_Show();
 #elif WIRELESS_TEST_ENABLE
@@ -639,9 +787,15 @@ int main(void)
             snprintf(ring_row,sizeof ring_row,"%c A%u B%u C%u F%u       ",side?'R':'L',
                 (unsigned)v->a.valid,(unsigned)v->b.valid,(unsigned)v->c.valid,(unsigned)track_nav.fault);
             tft180_show_string(0,132,ring_row);
-            snprintf(ring_row,sizeof ring_row,"AP%u EN%u AS%u ES%u      ",
-                (unsigned)(track_nav.phase==NAV_APPROACH),(unsigned)(track_nav.phase==NAV_ENTER),
-                (unsigned)appr_seen,(unsigned)enter_seen);
+            const uint8_t ring_active = track_nav.phase != NAV_NORMAL &&
+                (track_nav.element == TRACK_ROUND_LEFT ||
+                 track_nav.element == TRACK_ROUND_RIGHT);
+            const char ring_side = ring_active ?
+                (track_nav.element == TRACK_ROUND_LEFT ? 'L' : 'R') : '-';
+            const char *ring_state = ring_active ?
+                track_nav_name(track_nav.phase) : "OFF";
+            snprintf(ring_row, sizeof ring_row, "R:%c %-5.5s AS%u ES%u  ",
+                ring_side, ring_state, (unsigned)appr_seen, (unsigned)enter_seen);
             tft180_show_string(0,142,ring_row);
             tft180_show_string(0, 152, "TGT:");
             tft180_show_float(36, 152, speed_target, 2, 1);

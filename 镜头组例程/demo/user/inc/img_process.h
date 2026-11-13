@@ -26,7 +26,6 @@
 
 typedef enum
 {
-    // TRACK_NONE=无元素，TRACK_UNKNOWN=边线几何不完整，不能据此直接接管导航。
     TRACK_NONE = 0,
     TRACK_CROSS,
     TRACK_ROUND_LEFT,
@@ -36,7 +35,6 @@ typedef enum
 
 typedef struct
 {
-    // candidate是当前帧结果；confirmed经过连续帧确认；其余字段维护方向投票/序列证据。
     track_element_t candidate; // 当前帧，可能受噪声影响
     track_element_t confirmed; // 多帧确认结果，不是环岛行驶阶段
     uint8_t confirm_count;
@@ -66,6 +64,15 @@ const char *track_element_name(track_element_t element);
 #define NAV_STAGE_MIN_MS         (150u)
 #define NAV_RING_EXIT_MIN_MS     (400u)
 #define NAV_RING_EDGE_EXIT_MIN_MS (6000u) // 环岛确认后达到此时间，才允许贴边补线触发出口转向
+#define NAV_RING_EXIT_MIN_TRAVEL_COUNTS (26000u) // C-to-A arc: allow visual exit near A
+#define NAV_RING_EXIT_FORCE_COUNTS (32000u) // R50 map and A-C odometry: leave before another lap
+#define NAV_RING_EXIT_RELEASE_COUNTS (44000u) // From entry C, release ring mode before the return to C
+#define NAV_RING_TOP_TURN_START_COUNTS (598000u) // C-A-C plus the approach to the upper-right R50 bend
+#define NAV_RING_TOP_TURN_END_COUNTS   (70000u) // About one quarter of the R50 arc after turn begins
+#define NAV_RING_TOP_GATE_END_COUNTS   (72000u) // Keep repeat ring votes blocked through that bend
+#define NAV_RING_TOP_TURN_ANGLE        (10.0f)  // Left turn when the bend hides both camera edges
+#define NAV_RING_ENTRY_RECOVER_MS (750u) // Wait for the turn before treating recovered lanes as inside
+#define NAV_RING_ENTRY_RECOVER_FRAMES (3u)
 #define NAV_RING_EDGE_EXIT_FRAMES (3u)    // 控制路径连续贴边帧数
 #define NAV_INSIDE_MIN_MS        (500u)
 #define NAV_HOLD_MS              (200u)
@@ -74,9 +81,16 @@ const char *track_element_name(track_element_t element);
 #define NAV_RING_TIMEOUT_MS      (15000u) // 7/8日志环岛完整一圈超过8秒，环岛单独放宽超时
 #define NAV_RECOVER_MS           (600u)
 #define NAV_RING_RECOVER_MS      (1200u)
-#define NAV_RING_EXIT_TURN_MS    (2000u) // 第二次同向转向至少维持时间；同时等待出口路径连续稳定
-#define NAV_RING_EXIT_TURN_MAX_MS (3000u) // 路径持续丢失时，固定出口转向最多保持3秒
-#define NAV_RING_EXIT_TURN_ANGLE (18.0f) // 出环固定转向角度，达到当前舵机标定限位
+#define NAV_RING_A_TO_C_COUNTS (16500u) // Measured A-to-C gate from earlier successful run
+#define NAV_RING_ENTRY_TURN_MS  (550u) // Brief left steering after C
+#define NAV_RING_ARC_BASE_ANGLE (9.0f) // C-to-A left arc feedforward
+#define NAV_RING_ARC_LOST_ANGLE (11.5f) // Keep turning left through short image gaps
+#define NAV_RING_ARC_MIN_ANGLE (3.0f) // Never reverse the ring turn from a synthetic lane
+#define NAV_RING_ARC_MAX_ANGLE (14.0f) // Calibrated left servo limit
+#define NAV_RING_ARC_ERROR_GAIN (0.20f) // Small visual correction around the R50 arc
+#define NAV_RING_ENTRY_TURN_ANGLE (14.0f) // Duty units below servo limit
+#define NAV_RING_EXIT_TURN_MS    (500u) // 出口短暂转向，之后丢线时扶正
+#define NAV_RING_EXIT_TURN_ANGLE (10.0f) // 出环小幅转向，避免继续绕内环
 #define NAV_RECOVER_TIMEOUT_MS   (3000u)
 #define NAV_FAR_SUPPORT_ROWS    (6) // 连续真实双边线用于远端道路方向
 #define NAV_FAR_MAX_SLOPE        (2) // 每行中线最大变化像素
@@ -85,7 +99,6 @@ const char *track_element_name(track_element_t element);
 
 typedef enum
 {
-    // 导航阶段与元素识别标签分离：同一个环岛标签可依次处于接近、进入、环内、出口和恢复阶段。
     NAV_NORMAL = 0, NAV_CROSS, NAV_APPROACH, NAV_ENTER,
     NAV_INSIDE, NAV_EXIT, NAV_RECOVER, NAV_SLOW
 } track_nav_phase_t;
@@ -115,16 +128,14 @@ typedef struct
 
 typedef struct
 {
-    // 所有跨帧导航状态、逐行标定宽度及控制路径缓存；逐行数组按图像y索引。
     track_nav_phase_t phase;
     track_nav_phase_t slow_resume_phase; // 环岛丢线进入SLOW前的导航阶段，用于恢复同一侧循迹
     track_nav_fault_t fault;
     ring_vision_t vision;
     track_element_t element;
-    uint32_t started_ms, stage_ms, last_path_ms, apex_ms, exit_turn_until_ms;
-    uint8_t feature_frames, straight_frames, exit_confirm_frames, exit_path_frames;
-    uint8_t ring_turn_count; // 环岛同向转弯进度：0未入环转弯，1首转完成，2出环第二转已启动
-    uint8_t exit_anchor, guide_valid, drive_valid, entry_pending;
+    uint32_t started_ms, stage_ms, last_path_ms, apex_ms, exit_turn_until_ms, entry_ms;
+    uint8_t feature_frames, straight_frames, exit_confirm_frames, exit_path_frames, entry_recover_frames;
+    uint8_t exit_anchor, guide_valid, drive_valid, entry_pending, entry_distance_ready;
     uint8_t exit_guide_row, exit_guide_center, exit_guide_valid;
     uint8_t exit_evidence, exit_straight_fallback, ring_edge_turn_hint;
     int16_t exit_guide_slope;
@@ -138,8 +149,7 @@ typedef struct
 track_element_t track_visual_classify(ring_vision_t *, const uint8_t *,
     const uint8_t *, const uint8_t *, uint8_t, uint8_t);
 void abc_element_update(track_detector_t *, track_element_t);
-// left/right/mid输出为控制用补线；调用方必须先用raw_left/raw_right完成识别，
-// 否则上帧合成的边界会被误当作本帧真实视觉证据。
+// left/right/mid输出为控制用补线；识别必须先使用原始边线。
 void track_nav_update(track_nav_t *nav, const track_detector_t *detector,
                       const uint8_t *raw_left, const uint8_t *raw_right, const uint8_t *binary,
                       uint8_t *left, uint8_t *right, uint8_t *mid,

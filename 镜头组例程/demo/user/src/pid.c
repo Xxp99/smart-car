@@ -3,12 +3,23 @@
 // 电机PI初始参数：保持原有每10ms调用、t=1的离散周期约定。
 // Ki=0.5 是待实车验证的起始值，不能直接按秒制PID参数使用。
 float speed_KP = 50, speed_KI = 0.5f,speed_KD = 0.0, speed_IMAX = 5000.0, speed_OUTMAX = 5000.0;
-// 等待主循环拿到第一帧有效图像后再申请行驶速度。
-volatile float speed_target = 0.0f;
+volatile float speed_target = SPEED_CURVE_TARGET;
 volatile uint32 control_time_ms = 0;
 volatile uint32 speed_distance_counts = 0;
-static volatile float speed_requested = 0.0f;
+static volatile float speed_requested = SPEED_CURVE_TARGET;
 static volatile uint8 speed_stop_latched = 0;
+static volatile uint8 speed_task_active;
+static volatile uint32 speed_task_frame_ms;
+volatile uint8 speed_task_expired;
+volatile uint32 speed_wheel_difference;
+void Speed_Task_Update(float request, uint32 now)
+{
+    if (speed_stop_latched || speed_task_expired) return;
+    speed_requested = constrain_float(request, -30.0f, 30.0f);
+    speed_task_frame_ms = now;
+    __DMB();
+    speed_task_active = 1;
+}
 float speed_real = 0.0;
 float speed_pwm = 0.0;
 
@@ -18,8 +29,7 @@ pid_param_t speed_pid_r;  // 电机PID
 // 主循环每帧提交一次速度要求。近处偏差和远近中线变化都可触发减速。
 void Speed_Plan_Update(float near_error, float line_change, uint8 valid, float speed_limit)
 {
-    // 将视觉误差映射为目标速度，并受特殊元素限速约束；实际目标由10ms中断渐变。
-    if (speed_stop_latched) return;
+    if (speed_stop_latched || speed_task_active) return;
     float bend = MAX(func_abs(near_error), func_abs(line_change));
     float ratio = constrain_float((bend - SPEED_BEND_START) /
                                   (SPEED_BEND_FULL - SPEED_BEND_START), 0.0f, 1.0f);
@@ -31,14 +41,13 @@ void Speed_Plan_Update(float near_error, float line_change, uint8 valid, float s
 // 用真实反馈累计位移，不以目标速度或经过时间替代车辆移动。
 void Speed_Odom_Update(short left_count, short right_count)
 {
-    // 两轮有符号增量取平均，形成用于红砖清空等距离判定的累计位移计数。
     int delta = ((int)left_count + (int)right_count) / 2;
     speed_distance_counts += (uint32)delta;
+    speed_wheel_difference += (uint32)((int)left_count - (int)right_count);
 }
 
 void Speed_Stop_Latch(void)
 {
-    // 锁存终点停车请求，避免后续图像帧重新提交速度后意外启动车辆。
     // 中断先检查锁存位；后续图像即使申请加速也不能再次启动。
     speed_stop_latched = 1;
 }
@@ -46,18 +55,29 @@ void Speed_Stop_Latch(void)
 // 目标速度的变化率由固定采样周期决定，不随摄像头帧率变化。
 void Speed_Target_Tick(void)
 {
-    // 固定10ms调用：仅终点停车锁存时目标归零，否则按加减速步长平滑跟随。
     float requested;
     control_time_ms += SPEED_SAMPLE_PERIOD_MS;
-    requested = speed_stop_latched ? 0.0f : speed_requested;
-    if (requested <= 0.0f)
+    if (speed_task_active && control_time_ms - speed_task_frame_ms >= 300u)
+        speed_task_expired = 1;
+    requested = (speed_stop_latched || speed_task_expired) ? 0.0f : speed_requested;
+    if (requested == 0.0f)
     {
         speed_target = 0.0f;
         return;
     }
+    /* Do not change motor polarity until zero target and stopped wheel feedback.
+     * The task also requires a 500ms physical standstill between directions. */
+    if (speed_target * requested < 0.0f) { speed_target = 0.0f; return; }
+    if (speed_task_active) {
+        float magnitude = func_abs(speed_target);
+        magnitude += constrain_float(func_abs(requested)-magnitude,
+                                     -SPEED_DECEL_STEP, SPEED_ACCEL_STEP);
+        speed_target = requested < 0.0f ? -magnitude : magnitude;
+        return;
+    }
     speed_target += constrain_float(requested - speed_target,
                                     -SPEED_DECEL_STEP, SPEED_ACCEL_STEP);
-    speed_target = constrain_float(speed_target, 0.0f, SPEED_STRAIGHT_TARGET);
+    speed_target = constrain_float(speed_target, -30.0f, SPEED_STRAIGHT_TARGET);
 }
 
 /*******************************************************************************
@@ -68,7 +88,6 @@ void Speed_Target_Tick(void)
 *******************************************************************************/
 void My_Pid_Init(void)
 {
-    // 用同一组参数初始化左右轮速度环，各轮积分状态独立。
     Pid_Param_Init(&speed_pid_l, speed_KP, speed_KI,speed_KD, speed_IMAX, speed_OUTMAX);
     Pid_Param_Init(&speed_pid_r, speed_KP, speed_KI,speed_KD, speed_IMAX, speed_OUTMAX);
 }
@@ -82,7 +101,6 @@ void My_Pid_Init(void)
 *******************************************************************************/
 void Pid_Param_Init(pid_param_t * pid, float kp, float ki, float kd, float imax, float outmax)
 {
-    // 写入增益与限幅，并清空历史误差、积分项和输出，保证启动状态确定。
     pid->kp        = kp;
     pid->ki        = ki;
     pid->kd        = kd;
@@ -106,7 +124,6 @@ void Pid_Param_Init(pid_param_t * pid, float kp, float ki, float kd, float imax,
 *******************************************************************************/
 float PidLocCtrl(pid_param_t * pid, float error, float t)
 {
-    // 位置式PID直接输出PWM；本工程单向电机输出范围限定为0到outmax。
     // 当前调用仅用于单向电机速度环，实际PWM范围为0..outmax。
     float next_i;
     float next_out;
@@ -139,7 +156,6 @@ float PidLocCtrl(pid_param_t * pid, float error, float t)
 *******************************************************************************/
 float PidIncCtrl(pid_param_t * pid, float error, float t)
 {
-    // 增量式PID计算本周期输出变化量并累加；是否使用由调用处决定。
 
     pid->out_p = pid->kp * (error - pid->last_error);
     pid->out_i = pid->ki * error * t ;
@@ -162,7 +178,6 @@ float PidIncCtrl(pid_param_t * pid, float error, float t)
 *******************************************************************************/
 float constrain_float(float amt, float low, float high)
 {
-    // 将浮点值夹在闭区间[low, high]内，供误差、积分和PWM限幅复用。
     return ((amt)<(low)?(low):((amt)>(high)?(high):(amt)));
 }
 
@@ -174,7 +189,6 @@ float constrain_float(float amt, float low, float high)
 *******************************************************************************/
 short constrain_short(short amt, short low, short high)
 {
-    // 将短整型值夹在闭区间[low, high]内，防止整型控制量越界。
     return ((amt)<(low)?(low):((amt)>(high)?(high):(amt)));
 }
 
